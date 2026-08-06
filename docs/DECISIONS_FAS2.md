@@ -1,5 +1,44 @@
 # Beslutslogg — Fas 2 (chunking)
 
+## 2026-08-06 — Chunkningsstrategi
+
+**Två helt olika strategier, en per innehållstyp** (`src/chunking.py`):
+
+- **Tabellchunkar:** en huvudräkning (resultat-/balans-/kassaflödesräkning)
+  blir alltid EN chunk, oavsett hur många sidor den spänner över (Volvo
+  delar t.ex. balansräkningen TILLGÅNGAR / EGET KAPITAL OCH SKULDER på två
+  sidor - dessa hör ihop och får aldrig delas). Att aldrig klippa mitt i en
+  tabell var den tydligaste lärdomen från Fas 1: en halv rad utan sina
+  kolumnrubriker är meningslös vid retrieval.
+- **Textchunkar:** grupperar hela MENINGAR upp till en målstorlek (~1000
+  tecken, hårt tak 1400) och klipper aldrig mitt i en mening. Vald framför
+  klassisk stycke-baserad chunkning eftersom `pdfplumber`s textextraktion
+  inte ger tillförlitliga styckesmarkörer i denna typ av flerkolumniga
+  PDF-layouter (ingen blankrad mellan stycken i den extraherade texten) -
+  meningen är den minsta semantiska enhet vi kan lita på givet det
+  underlaget. Sidor utan meningsskiljande punktuering (leveransstatistik,
+  ESRS-indextabeller) faller tillbaka på radbaserad delning istället för
+  att bli en enda överdimensionerad chunk.
+
+**Metadata per chunk:** `document`, `company`, `fiscal_year`, `chunk_type`
+("text"/"table"), `section` (huvudräkningstyp för tabellchunkar, annars
+`None`), `pages` (lista - stödjer flersidiga tabellchunkar). Detta är vad
+som gör källhänvisning möjlig i Fas 3+.
+
+**Testverifiering (steg 3) hittade två buggar** som fixades: dels
+överdimensionerade chunkar på sidor utan meningsskiljande punktuering
+(löst med radbaserad fallback-delning), dels triviala dubbletter av
+återkommande sidfötter/rubriker samt upprepad text från en redan känt
+problematisk sida (löst med dokumentnivå-deduplicering av identiskt
+textinnehåll). 45/45 tester gröna efter fix.
+
+**Stickprov (steg 4) bekräftade:** kärninnehållet (löptext i
+förvaltningsberättelsen, samtliga huvudräkningar) är genomgående rent och
+sammanhängande. Kvarvarande svagheter (notdisclosure-tabeller utan
+kolumnrubriker, infografik-tunga hållbarhetssidor, personprofilrutnät för
+styrelse/ledning) ligger uteslutande i innehåll som redan är utanför scope
+enligt docs/SCOPE.md.
+
 ## 2026-08-06 — Rättelse i Fas 1: spaltmedveten textextraktion
 
 **Upptäckt under Fas 2, steg 1.** Vid stickprov av de första textchunkarna
