@@ -218,10 +218,82 @@ modellnamnet i `src/vectorstore.py` (`embed_passages` / `embed_query`), och
 `src/search.py` importerar dem, så att indexering och sökning inte kan
 använda olika konventioner.
 
-**Kvarstående begränsning (ej åtgärdad):** även den bästa modellen har
-enskilda katastroffall (SkiStars "summa tillgångar" hamnar på rank 42).
-Frågorna bär starka lexikala signaler - bolagsnamn, år, exakt
-nyckeltalsnamn - som ren vektorsökning inte utnyttjar. Nästa naturliga steg
-för retrieval-kvalitet är metadatafiltrering på bolag/år kombinerat med
-vektorsökning (hybrid), vilket sannolikt ger mer än ytterligare
-modellbyten. Flaggat men medvetet inte påbörjat i denna omgång.
+**Kvarstående begränsning:** även den bästa modellen hade enskilda
+katastroffall (SkiStars "summa tillgångar" på rank 42). Åtgärdat med
+hybridsökning, se nästa avsnitt.
+
+## 2026-08-06 (forts.) — Hybridsökning: metadatafilter + vektor + BM25
+
+Frågorna i vårt scope bär tre signaler som ren vektorsökning inte
+utnyttjar:
+
+    "Vad var SkiStars nettoomsättning 2023/24?"
+         |            |               |
+      bolag        nyckeltal      räkenskapsår
+
+`src/hybrid_search.py` använder alla tre:
+
+1. **Metadatafilter** - bolag och räkenskapsår tolkas ur frågan och används
+   som hårt filter mot Chromas metadata. Sätts bara när tolkningen är
+   entydig OCH matchar värden som finns i indexet; annars ofiltrerat.
+   Automatisk återgång till ofiltrerad sökning om filtret gav för få
+   träffar.
+2. **Vektorsökning** - semantisk likhet (multilingual-e5-base).
+3. **BM25** - lexikalisk matchning, som fångar exakta termer där
+   embeddingen är osäker.
+
+Vektor- och BM25-listorna slås ihop med Reciprocal Rank Fusion. RRF valdes
+för att den bara använder RANGORDNING, inte poäng - de två systemens
+poängskalor är inte jämförbara och skulle annars kräva normalisering med
+godtyckligt valda vikter.
+
+**Årstolkning för brutet räkenskapsår.** SkiStars räkenskapsår heter
+"2023-24" i indexet, men en användare skriver naturligt "2023/24" eller
+bara "2024". Årskandidater valideras därför mot DET IDENTIFIERADE BOLAGETS
+år, inte mot alla år i indexet: "SkiStars omsättning 2024" blir "2023-24"
+(året som slutar i augusti 2024), medan samma årtal för Volvo blir "2024".
+Utan bolagsspecifik validering hade filtret gett noll träffar.
+
+**Resultat (samma facit som modelljämförelsen):**
+
+| | Recall@1 | Recall@3 | Recall@5 | MRR |
+|---|---|---|---|---|
+| Vektorsökning (e5-base) | 38 % | 62 % | 75 % | 0,527 |
+| **Hybrid** | 62 % | **100 %** | **100 %** | 0,771 |
+
+Ingen fråga blev sämre. Det tidigare katastroffallet (rank 42) ligger nu
+inom topp 3.
+
+**Val av RRF-konstant - en avvägning värd att förstå.** Vid felsökning av
+den svåraste frågan visade det sig att BM25 rankade rätt svar som #1 medan
+vektorsökningen rankade det som #15 (modellen skiljer genuint inte på
+"summa tillgångar", "summa skulder" och "summa eget kapital"). Med
+standardvärdet k=60 blir rank 1 och rank 15 nästan likvärdiga i RRF, så
+vektorns självsäkra men felaktiga förstaplats röstade ner BM25:s korrekta.
+
+Uppmätt sveptest:
+
+| k | Recall@1 | Recall@3 | Recall@5 | MRR |
+|---|---|---|---|---|
+| 1-3 | 62 % | 88 % | 100 % | 0,78 |
+| **5** | 62 % | **100 %** | **100 %** | 0,771 |
+| 10-20 | 62 % | 88 % | 100 % | 0,78 |
+| 40-60 | **75 %** | 88 % | 88 % | **0,828** |
+
+Höga k ger bäst Recall@1 och MRR - men missar en fråga helt (rank 8). I ett
+RAG-system läser språkmodellen ALLA topp-k chunkar, så att svaret
+överhuvudtaget finns i kontexten (Recall@5) väger tyngre än att det ligger
+exakt först. **Valt k=5.** Hela bandet k=1..20 ger Recall@5=100 %, så valet
+är inte känsligt för det exakta värdet.
+
+**Facit är nu en del av testsviten** (`tests/test_hybrid_search.py`), inte
+bara ett engångsexperiment: retrieval är systemets vanligaste flaskhals och
+en tyst försämring vid framtida ändringar (ny modell, ändrad chunkning,
+annan RRF-konstant) vore annars svår att upptäcka. Testet
+`test_recall_at_5_is_complete` failar om något facit-svar hamnar utanför
+topp 5.
+
+**Kvarstående begränsning:** facit omfattar 8 frågor, alla kvantitativa och
+välformulerade. Det säger inget om vagare frågor ("hur har det gått för
+bolaget?"), frågor utan bolagsnamn, eller kvalitativa risk-/utsiktsfrågor.
+Facit bör utökas när fler frågetyper testas i senare faser.

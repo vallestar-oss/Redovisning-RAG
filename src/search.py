@@ -66,7 +66,11 @@ class Searcher:
 def format_result(r: SearchResult, index: int) -> str:
     section = f" ({r.section})" if r.section else ""
     pages = ", ".join(str(p) for p in r.pages)
-    header = f"[{index}] {r.document} s.{pages} - {r.chunk_type}{section} - avstånd {r.distance:.3f}"
+    header = f"[{index}] {r.document} s.{pages} - {r.chunk_type}{section}"
+    # Hybridsökningen rangordnar via fusion och har inget jämförbart
+    # avstånd (NaN) - skriv då inte ut ett meningslöst tal.
+    if r.distance == r.distance:  # False endast för NaN
+        header += f" - avstånd {r.distance:.3f}"
     preview = r.text if len(r.text) <= 300 else r.text[:300] + "..."
     return f"{header}\n{preview}"
 
