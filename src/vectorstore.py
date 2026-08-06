@@ -1,9 +1,9 @@
 """Indexerar Fas 2:s chunkar i en lokal Chroma-vektordatabas.
 
-Embeddings skapas med `sentence-transformers` (all-MiniLM-L6-v2, se
-docs/DECISIONS_FAS3.md) och sparas tillsammans med chunkens metadata
-(dokument, bolag, år, sida, sektion, text/tabell) så att varje sökträff
-kan källhänvisas.
+Embeddings skapas med `sentence-transformers` (multilingual-e5-base, se
+docs/DECISIONS_FAS3.md för modelljämförelsen) och sparas tillsammans med
+chunkens metadata (dokument, bolag, år, sida, sektion, text/tabell) så att
+varje sökträff kan källhänvisas.
 
 Chroma tillåter bara str/int/float/bool som metadatavärden - inga listor
 och inget None. `pages` (en lista i Fas 2:s chunkformat) lagras därför som
@@ -18,8 +18,30 @@ import chromadb
 from sentence_transformers import SentenceTransformer
 
 COLLECTION_NAME = "arsredovisningar"
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+EMBEDDING_MODEL = "intfloat/multilingual-e5-base"
+# E5-modellerna är tränade med asymmetriska prefix och tappar mätbart i
+# kvalitet utan dem: dokument ska embeddas som "passage: ..." och frågor som
+# "query: ...". Prefixen hör därför ihop med modellvalet och definieras här,
+# så att indexering (denna modul) och sökning (src/search.py) inte kan
+# råka använda olika konventioner.
+QUERY_PREFIX = "query: "
+PASSAGE_PREFIX = "passage: "
 _BATCH_SIZE = 64
+
+
+def embed_passages(model: SentenceTransformer, texts: list[str]) -> list[list[float]]:
+    return model.encode(
+        [PASSAGE_PREFIX + t for t in texts],
+        batch_size=_BATCH_SIZE,
+        normalize_embeddings=True,
+        show_progress_bar=False,
+    ).tolist()
+
+
+def embed_query(model: SentenceTransformer, query: str) -> list[float]:
+    return model.encode(
+        [QUERY_PREFIX + query], normalize_embeddings=True, show_progress_bar=False
+    ).tolist()[0]
 
 
 def _chunk_to_metadata(chunk: dict) -> dict:
@@ -56,7 +78,7 @@ def build_index(chunks_dir: Path, persist_dir: Path, collection_name: str = COLL
             ids = [c["chunk_id"] for c in batch]
             texts = [c["text"] for c in batch]
             metadatas = [_chunk_to_metadata(c) for c in batch]
-            embeddings = model.encode(texts, show_progress_bar=False).tolist()
+            embeddings = embed_passages(model, texts)
             collection.add(ids=ids, embeddings=embeddings, documents=texts, metadatas=metadatas)
             total += len(batch)
 

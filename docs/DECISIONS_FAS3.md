@@ -106,3 +106,122 @@ förekommer likadant i både huvudräkningen och Volvos elvaårsöversikt,
 eller en post som anges både som delsumma och slutsumma i samma
 räkning) - det är verklig, upprepad data i källdokumentet, inte ett
 chunkningsfel.
+
+## 2026-08-06 (forts.) — Kvalitetslyft: kolumnkoppling och SkiStars koncernräkningar
+
+Två kvarvarande svagheter åtgärdade efter genomgång av vad som fortfarande
+inte höll högsta kvalitet.
+
+### 1. Värden var inte kopplade till rätt kolumn (gav FEL SVAR)
+
+`_assign_to_columns` returnerade tidigare bara talen i x-ordning,
+komprimerade utan luckor. Så snart en rad saknade värden för någon period
+förskjöts allt som följde. Konkret exempel från Volvos elvaårsöversikt,
+raden "Skulder som innehas för försäljning":
+
+| | 2023 | 2022 | 2021 | 2020 | 2019 | 2018 | 2017 | 2016 |
+|---|---|---|---|---|---|---|---|---|
+| I PDF:en | 8.157 | – | – | 6.638 | 5.927 | – | – | 148 |
+| Lagrades som | 8.157 | 6.638 | 5.927 | 148 | ... | | | |
+
+En läsare som tolkade listan positionellt fick alltså 2022 = 6.638, när
+det värdet i själva verket hör till 2020. Det här är den enda av de
+kvarvarande bristerna som kunde ge ett **direkt felaktigt svar** på en
+fråga inom scope (flerårstrend är prioritet 2 i docs/SCOPE.md).
+
+**Åtgärd:** `FinancialRow` bär nu `columns` (kolumnrubrikerna) och en
+`values`-lista som är POSITIONELLT KOPPLAD till dem, med `None` där
+kolumnen saknar värde. Hjälparna `present_values` och `by_column()` ger
+åtkomst utan respektive med kolumnkoppling. Ett nytt test
+(`test_values_are_positionally_aligned_with_columns`) kräver att antalet
+värdeplatser alltid är lika med antalet kolumner.
+
+**Följdförbättring - segmentnamn.** Volvos huvudräkningar delar samma
+årtal på fyra segment, så kolumnrubrikerna blev tvetydiga ("2023" fyra
+gånger). `_find_segment_labels` letar nu efter segmentrubrikraden ovanför
+årsraden och bygger sammansatta rubriker. "Summa tillgångar" blir därmed
+otvetydig:
+
+```
+Industriverksamheten 2023 = 439.807
+Financial Services 2023   = 270.307
+Elimineringar 2023        = –36.046
+Volvokoncernen 2023       = 674.068   <- koncernens totalsiffra
+```
+
+Segmentraden identifieras robust genom att dess fraser ska vara färre än
+antalet kolumner OCH dela kolumnantalet jämnt - det utesluter Volvos
+mellanliggande "31 dec"-rad, som ger exakt lika många fraser som kolumner.
+
+### 2. SkiStar kördes på moderbolagsnivå (täckningslucka)
+
+SkiStar extraherades tidigare från moderbolagets räkningar eftersom
+koncernsidorna gav fel resultat. Det innebar att SkiStars **koncern**-
+nyckeltal helt saknades i systemet. Båda underliggande orsakerna är nu
+åtgärdade:
+
+- **Tabeller sida vid sida** - löstes redan av regionsstödet som byggdes
+  tidigare i Fas 2/3; koncernsidornas två regioner (t.ex. "Koncernens
+  rapport över totalresultat" / "Övrigt totalresultat") separeras korrekt.
+- **Inbäddat stapeldiagram på kassaflödessidan** - diagrammets
+  axeletiketter ("MSEK", "1 500", "19/2020/2121/...") låg till höger om
+  tabellens sista kolumn och klistrades in i radetiketterna. Åtgärdat med
+  en generell regel: i en finansiell tabell står radetiketten alltid till
+  VÄNSTER om värdekolumnerna, så allt till höger om sista kolumnen
+  (+ tolerans) hör inte till raden.
+
+**Verifierat:** alla tre SkiStar-år balanserar nu på koncernnivå
+(tillgångar = eget kapital + skulder: 8 760 992 / 8 681 892 / 8 762 467).
+`_LEVEL_BY_COMPANY_PREFIX` är därmed tömd - samtliga bolag körs på
+koncernnivå. Testsviten importerar nu nivåvalet från `src/pipeline.py`
+istället för att duplicera det, så att test och produktionskod inte kan
+glida isär.
+
+## 2026-08-06 (forts.) — Byte av embeddingmodell efter mätning
+
+Vid verifieringen av ovanstående fixar syntes att retrieval-precisionen var
+svagare än den sett ut vid det tidigare stickprovet. Ett kontrollerat test
+visade att `all-MiniLM-L6-v2` knappt skiljer på svenska facktermer:
+
+| Fråga | Avstånd rätt svar | Avstånd fel svar |
+|---|---|---|
+| "Hexatronics nettoomsättning 2023" | 0,2819 | 0,2887 (*nettoinvesteringar*) |
+| "SkiStars summa tillgångar" | 0,2548 | **0,2514** (*summa långfristiga skulder*) |
+
+Marginalerna är ~0,005 - i praktiken slumpmässigt. Modellen är
+engelskcentrerad och saknar tillräcklig svensk semantik.
+
+**Mätning istället för gissning.** Ett facit byggdes med 8 svenska
+nyckeltalsfrågor och kända korrekta chunk-id:n, och fyra modeller kördes
+mot HELA korpusen (6855 chunkar):
+
+| Modell | Recall@1 | Recall@3 | Recall@5 | MRR |
+|---|---|---|---|---|
+| all-MiniLM-L6-v2 (tidigare) | 25 % | 62 % | 75 % | 0,476 |
+| paraphrase-multilingual-MiniLM-L12-v2 | 0 % | 12 % | 38 % | 0,108 |
+| KBLab/sentence-bert-swedish-cased | 25 % | 25 % | 25 % | 0,295 |
+| **intfloat/multilingual-e5-base** | **38 %** | 62 % | 75 % | **0,527** |
+
+**Beslut:** byt till `intfloat/multilingual-e5-base`. Den vinner på
+Recall@1 och MRR och är oförändrad på Recall@3/@5.
+
+Två noterbara resultat: den uppenbara kandidaten
+(`paraphrase-multilingual-MiniLM-L12-v2`) var *dramatiskt sämre* än
+baslinjen, och den svenskspecifika KBLab-modellen presterade också sämre.
+Utan mätningen hade ett "rimligt" modellval med god sannolikhet försämrat
+systemet.
+
+**Implementationsdetalj:** E5-modeller är tränade med asymmetriska prefix
+och tappar mätbart utan dem - dokument ska embeddas som `passage: ...` och
+frågor som `query: ...`. Prefixen definieras därför tillsammans med
+modellnamnet i `src/vectorstore.py` (`embed_passages` / `embed_query`), och
+`src/search.py` importerar dem, så att indexering och sökning inte kan
+använda olika konventioner.
+
+**Kvarstående begränsning (ej åtgärdad):** även den bästa modellen har
+enskilda katastroffall (SkiStars "summa tillgångar" hamnar på rank 42).
+Frågorna bär starka lexikala signaler - bolagsnamn, år, exakt
+nyckeltalsnamn - som ren vektorsökning inte utnyttjar. Nästa naturliga steg
+för retrieval-kvalitet är metadatafiltrering på bolag/år kombinerat med
+vektorsökning (hybrid), vilket sannolikt ger mer än ytterligare
+modellbyten. Flaggat men medvetet inte påbörjat i denna omgång.

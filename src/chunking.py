@@ -104,19 +104,48 @@ def _chunk_text(text: str, target_chars: int = _TARGET_CHARS, max_chars: int = _
     return chunks
 
 
-def _format_values(values: list[str]) -> str:
-    if len(values) == 1:
-        return values[0]
-    if len(values) == 2:
-        return f"{values[0]} (föregående period: {values[1]})"
-    return ", ".join(values)  # flerårsöversikt - fler än två perioder
+# `company` kommer från filnamnet och är gemener (används som stabil
+# identifierare i metadata/filtrering). I chunktexten - som både embeddas
+# och visas som källa för användaren - vill vi ha bolagets riktiga skrivsätt.
+_COMPANY_DISPLAY_NAMES = {
+    "skistar": "SkiStar",
+    "hexatronic": "Hexatronic",
+    "volvo": "Volvo",
+}
+
+
+def _display_company(company: str) -> str:
+    return _COMPANY_DISPLAY_NAMES.get(company.lower(), company[:1].upper() + company[1:])
+
+
+def _clean_column_label(column: str) -> str:
+    """SkiStars periodrubriker delas över två rader i PDF:en ("2023-09-01"
+    på en rad, "–2024-08-31" på nästa), så etiketten får ett ledande
+    tankstreck. Slutdatumet identifierar perioden entydigt - vi tar bort
+    det inledande strecket för läsbarhetens skull."""
+    return column.lstrip("−–- ").strip()
+
+
+def _format_values(row: dict) -> str:
+    """Skriver ut varje värde tillsammans med SIN EGEN kolumnrubrik.
+
+    Varje värde måste bära sin kolumn explicit: en rad kan sakna värden för
+    vissa perioder, och i Volvos segmenterade räkningar upprepas samma
+    årtal för fyra olika segment. En ren värdelista skulle i båda fallen
+    läsas positionellt och ge fel period/segment - se docs/DECISIONS_FAS3.md.
+    """
+    columns = row.get("columns") or []
+    values = row.get("values") or []
+    pairs = [(c, v) for c, v in zip(columns, values) if v is not None]
+    if not pairs:
+        return "inget värde angivet"
+    return ", ".join(f"{value} ({_clean_column_label(column)})" for column, value in pairs)
 
 
 def _row_sentence(company: str, statement_type: str, fiscal_year: str, row: dict) -> str:
-    company_cap = company[:1].upper() + company[1:]
     return (
-        f"{company_cap} {statement_type} {fiscal_year}: {row['label']} var "
-        f"{_format_values(row['values'])}."
+        f"{_display_company(company)} {statement_type} {fiscal_year}: {row['label']} var "
+        f"{_format_values(row)}."
     )
 
 
@@ -127,7 +156,7 @@ def _render_table_chunk(statement_type: str, company: str, fiscal_year: str, row
     rymden (avstånd 0,335 mot 0,180 för samma sakuppgift naturligt
     formulerad - se docs/DECISIONS_FAS3.md) - embeddingmodellen är tränad på
     löpande språk, inte tätt tabellformat."""
-    intro = f"{company[:1].upper()}{company[1:]} {statement_type} {fiscal_year}."
+    intro = f"{_display_company(company)} {statement_type} {fiscal_year}."
     sentences = [_row_sentence(company, statement_type, fiscal_year, row) for row in rows]
     return " ".join([intro] + sentences)
 

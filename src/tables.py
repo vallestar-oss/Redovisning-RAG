@@ -89,14 +89,34 @@ _HEADER_LINE_MERGE_GAP = 5.0
 # annars kan ett sådant ord som råkar hamna på samma rad som en rubrik dra in
 # hela sidopanelen i regionens vänstergräns för efterföljande datarader.
 _MAX_TITLE_TO_ANCHOR_DISTANCE = 400.0
+# Hur långt ovanför årsraden vi letar efter en segmentrubrik. Volvos
+# segmentrad ligger ~19pt över årsraden med en "31 dec"-rad emellan.
+_SEGMENT_LOOKBACK_LINES = 4
+_SEGMENT_LOOKBACK_PT = 45.0
 
 
 @dataclass
 class FinancialRow:
     label: str
-    values: list[str]
+    # POSITIONELLT KOPPLADE till `columns`: values[i] hör till columns[i].
+    # None betyder att kolumnen saknar värde på den raden (i PDF:en oftast
+    # ett tankstreck). Att bevara luckorna är avgörande - se
+    # docs/DECISIONS_FAS3.md om varför en kompakt lista utan luckor gav
+    # direkt felaktig år-till-värde-koppling i flerårsöversikter.
+    values: list[str | None]
+    columns: list[str]  # kolumnrubriker, t.ex. ["2023", "2022", ..., "2013"]
     page: int
     source: str = "layout"
+
+    @property
+    def present_values(self) -> list[str]:
+        """Endast de värden som faktiskt finns, utan kolumnkoppling.
+        Använd bara där kolumntillhörigheten är irrelevant."""
+        return [v for v in self.values if v is not None]
+
+    def by_column(self) -> list[tuple[str, str]]:
+        """(kolumnrubrik, värde) för de kolumner som har ett värde."""
+        return [(c, v) for c, v in zip(self.columns, self.values) if v is not None]
 
 
 @dataclass
@@ -110,6 +130,7 @@ class _Region:
     left_boundary: float
     right_boundary: float  # exklusiv övre gräns; float("inf") för sista regionen
     column_centers: list[float]
+    column_labels: list[str] = field(default_factory=list)  # samma ordning som column_centers
     pending_label_parts: list[str] = field(default_factory=list)
     last_line_top: float | None = None
     has_emitted_row: bool = False
@@ -164,7 +185,60 @@ def _cluster_year_words(year_words: list[dict]) -> list[list[dict]]:
     return clusters
 
 
-def _find_header_regions(line: _Line) -> list[_Region]:
+def _group_into_phrases(words: list[dict], max_gap: float = 8.0) -> list[dict]:
+    """Slår ihop ord som står tätt intill varandra till en fras
+    ("Financial" + "Services" -> "Financial Services")."""
+    phrases: list[dict] = []
+    for w in sorted(words, key=lambda w: w["x0"]):
+        if phrases and w["x0"] - phrases[-1]["x1"] <= max_gap:
+            phrases[-1]["text"] += " " + w["text"]
+            phrases[-1]["x1"] = w["x1"]
+        else:
+            phrases.append({"text": w["text"], "x0": w["x0"], "x1": w["x1"]})
+    return phrases
+
+
+def _find_segment_labels(
+    preceding_lines: list[_Line], column_centers: list[float]
+) -> list[str] | None:
+    """Letar efter en segmentrubrikrad ovanför årsraden och returnerar ett
+    segmentnamn per kolumn.
+
+    Volvos huvudräkningar delar upp samma årtal på fyra segment
+    (Industriverksamheten / Financial Services / Elimineringar /
+    Volvokoncernen), var och en med kolumnerna 2023 och 2022. Utan
+    segmentnamnet blir kolumnetiketterna tvetydiga ("2023" fyra gånger)
+    och en läsare kan inte se vilket tal som är koncernens totalsiffra.
+
+    Segmentraden identifieras som den närmaste raden ovanför vars fraser
+    (a) innehåller bokstäver, (b) är färre än antalet kolumner, och
+    (c) delar kolumnantalet jämnt. Det utesluter t.ex. Volvos
+    mellanliggande "31 dec"-rad, som ger exakt lika många fraser som
+    kolumner.
+    """
+    if len(column_centers) < 2:
+        return None
+    for line in reversed(preceding_lines):
+        phrases = _group_into_phrases([w for w in line.words if not _is_year_like(w["text"])])
+        phrases = [p for p in phrases if any(c.isalpha() for c in p["text"])]
+        if len(phrases) < 2 or len(phrases) >= len(column_centers):
+            continue
+        if len(column_centers) % len(phrases) != 0:
+            continue
+        labels = []
+        for center in column_centers:
+            nearest = min(phrases, key=lambda p: abs(center - (p["x0"] + p["x1"]) / 2))
+            labels.append(nearest["text"])
+        # Varje segment ska täcka lika många kolumner - annars har vi
+        # sannolikt matchat fel rad.
+        per_segment = len(column_centers) // len(phrases)
+        if any(labels.count(p["text"]) != per_segment for p in phrases):
+            continue
+        return labels
+    return None
+
+
+def _find_header_regions(line: _Line, preceding_lines: list[_Line] | None = None) -> list[_Region]:
     year_words = [w for w in line.words if _is_year_like(w["text"])]
     has_currency = any(w["text"].lower().strip(":") in CURRENCY_UNITS for w in line.words)
     is_header = len(year_words) >= 2 or (has_currency and len(year_words) >= 1)
@@ -210,10 +284,29 @@ def _find_header_regions(line: _Line) -> list[_Region]:
 
     regions = []
     for i, cluster in enumerate(clusters if year_words else [[]]):
-        column_centers = sorted((w["x0"] + w["x1"]) / 2 for w in cluster)
+        # Sortera etikett och center TILLSAMMANS så att column_labels[j]
+        # alltid hör ihop med column_centers[j].
+        by_x = sorted(cluster, key=lambda w: (w["x0"] + w["x1"]) / 2)
+        column_centers = [(w["x0"] + w["x1"]) / 2 for w in by_x]
+        column_labels = [w["text"].strip() for w in by_x]
+        # Om samma årtal förekommer flera gånger är etiketterna tvetydiga -
+        # då (och endast då) letar vi efter en segmentrubrik ovanför för att
+        # skilja kolumnerna åt, t.ex. "Industriverksamheten 2023" vs
+        # "Volvokoncernen 2023".
+        if preceding_lines and len(set(column_labels)) < len(column_labels):
+            segments = _find_segment_labels(preceding_lines, column_centers)
+            if segments:
+                column_labels = [f"{seg} {yr}" for seg, yr in zip(segments, column_labels)]
         left_boundary = left_boundaries[i]
         right_boundary = left_boundaries[i + 1] if i + 1 < len(left_boundaries) else float("inf")
-        regions.append(_Region(left_boundary=left_boundary, right_boundary=right_boundary, column_centers=column_centers))
+        regions.append(
+            _Region(
+                left_boundary=left_boundary,
+                right_boundary=right_boundary,
+                column_centers=column_centers,
+                column_labels=column_labels,
+            )
+        )
     return regions
 
 
@@ -259,21 +352,75 @@ def _is_number_token(token: dict) -> bool:
     return token.get("is_number", False) or token.get("is_dash", False)
 
 
-def _assign_to_columns(number_tokens: list[dict]) -> list[str]:
-    """Sorterar tal i x-ordning; ett tal per kolumn i tur och ordning.
+def _assign_to_columns(number_tokens: list[dict], column_centers: list[float]) -> list[str | None]:
+    """Placerar varje tal på den kolumn vars centrum ligger närmast talets
+    egen mittpunkt, och returnerar en lista som är POSITIONELLT KOPPLAD
+    till kolumnerna (None där kolumnen saknar värde).
 
-    Vi antar att antalet tal på en rad aldrig överstiger antalet kolumner
-    och att de förekommer i samma vänster-till-höger-ordning som
-    kolumnerna (inga hoppade/omkastade kolumner) - stämmer med hur
-    svenska årsredovisningars flerkolumnstabeller är uppbyggda.
+    Tidigare returnerades bara talen i x-ordning, komprimerat utan luckor.
+    Det gav fel år-till-värde-koppling så snart en rad saknade värden för
+    något år: raden "Skulder som innehas för försäljning" i Volvos
+    elvaårsöversikt (8.157 - - 6.638 ...) komprimerades till
+    [8.157, 6.638, ...], vilket positionellt lästes som att 2022 var 6.638
+    när det värdet i själva verket hör till 2020. Se docs/DECISIONS_FAS3.md.
+
+    Vid krock (två tal närmast samma kolumn - ska inte hända i en
+    välformad tabell) vinner det tal som ligger närmast kolumncentrum;
+    det andra placeras på närmaste lediga kolumn åt det håll det ligger,
+    så att inget extraherat värde tyst försvinner.
     """
-    return [t["text"] for t in sorted(number_tokens, key=lambda t: t["x0"])]
+    if not column_centers:
+        return []
+
+    assigned: list[str | None] = [None] * len(column_centers)
+    distances: list[float] = [float("inf")] * len(column_centers)
+
+    def place(text: str, x_center: float) -> None:
+        idx = min(range(len(column_centers)), key=lambda i: abs(x_center - column_centers[i]))
+        dist = abs(x_center - column_centers[idx])
+        if assigned[idx] is None:
+            assigned[idx], distances[idx] = text, dist
+            return
+        # Krock: behåll det närmaste, knuffa ut det andra till närmaste
+        # lediga kolumn i den riktning det hör hemma.
+        if dist < distances[idx]:
+            displaced, assigned[idx], distances[idx] = assigned[idx], text, dist
+            text = displaced
+        direction = 1 if x_center >= column_centers[idx] else -1
+        j = idx + direction
+        while 0 <= j < len(assigned):
+            if assigned[j] is None:
+                assigned[j] = text
+                return
+            j += direction
+        # Ingen ledig kolumn åt det hållet - prova motsatt riktning.
+        j = idx - direction
+        while 0 <= j < len(assigned):
+            if assigned[j] is None:
+                assigned[j] = text
+                return
+            j -= direction
+
+    for t in sorted(number_tokens, key=lambda t: (t["x0"] + t["x1"]) / 2):
+        place(t["text"], (t["x0"] + t["x1"]) / 2)
+
+    return assigned
 
 
 def _process_region_line(region: _Region, line: _Line, page_number: int) -> FinancialRow | None:
+    # I en finansiell tabell står radetiketten alltid TILL VÄNSTER om
+    # värdekolumnerna. Ingenting till höger om den sista kolumnen hör till
+    # raden - där ligger istället sidoinnehåll, t.ex. det inbäddade
+    # stapeldiagrammet på SkiStars kassaflödessida vars axeletiketter
+    # ("MSEK", "1 500", "19/2020/2121/...") annars klistras in i
+    # radetiketten. Se docs/DECISIONS_FAS3.md.
+    right_cutoff = region.right_boundary
+    if region.column_centers:
+        right_cutoff = min(right_cutoff, max(region.column_centers) + _MAX_COLUMN_DISTANCE)
+
     in_scope_words = [
         w for w in line.words
-        if w["x0"] >= region.left_boundary - _LEFT_BOUNDARY_SLACK and w["x0"] < region.right_boundary
+        if w["x0"] >= region.left_boundary - _LEFT_BOUNDARY_SLACK and w["x0"] < right_cutoff
     ]
     if not in_scope_words:
         return None
@@ -314,9 +461,14 @@ def _process_region_line(region: _Region, line: _Line, page_number: int) -> Fina
     if len(label) > _MAX_LABEL_LENGTH or len(label) < _MIN_LABEL_LENGTH:
         return None  # sannolikt löptext/fotnot eller trasig rad, inte en äkta tabellrad
 
-    values = _assign_to_columns(number_tokens)
+    values = _assign_to_columns(number_tokens, region.column_centers)
     region.has_emitted_row = True
-    return FinancialRow(label=label, values=values, page=page_number)
+    return FinancialRow(
+        label=label,
+        values=values,
+        columns=list(region.column_labels),
+        page=page_number,
+    )
 
 
 def extract_financial_rows(page: pdfplumber.page.Page) -> list[FinancialRow]:
@@ -326,8 +478,12 @@ def extract_financial_rows(page: pdfplumber.page.Page) -> list[FinancialRow]:
     rows: list[FinancialRow] = []
     regions: list[_Region] = []
 
-    for line in lines:
-        header_regions = _find_header_regions(line)
+    for idx, line in enumerate(lines):
+        # Segmentrubriken (t.ex. "Industriverksamheten") står några rader
+        # ovanför årsraden - skicka med den närmaste kontexten.
+        preceding = [ln for ln in lines[max(0, idx - _SEGMENT_LOOKBACK_LINES):idx]
+                     if 0 < line.top - ln.top <= _SEGMENT_LOOKBACK_PT]
+        header_regions = _find_header_regions(line, preceding)
         if header_regions:
             regions = header_regions
             continue

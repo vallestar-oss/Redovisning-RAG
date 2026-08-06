@@ -18,16 +18,10 @@ from src.tables import extract_financial_rows
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "raw"
 
-# Samma regel som användes vid Fas 1:s manuella verifiering: SkiStars
-# koncernsidor har en väsentligt rörigare layout (se docs/DECISIONS.md) och
-# extraheras därför från moderbolagets räkningar istället.
-_LEVEL_BY_COMPANY_PREFIX = {"skistar": "moderbolag"}
-_DEFAULT_LEVEL = "koncern"
-
-
-def _level_for(pdf_path: Path) -> str:
-    prefix = pdf_path.stem.split("_")[0].lower()
-    return _LEVEL_BY_COMPANY_PREFIX.get(prefix, _DEFAULT_LEVEL)
+# Nivåvalet (koncern/moderbolag) importeras från pipelinen istället för att
+# dupliceras här - annars kan testet och produktionskoden glida isär och
+# testet råka verifiera en annan nivå än den som faktiskt indexeras.
+from src.pipeline import _level_for  # noqa: E402
 
 
 def _all_documents() -> list[Path]:
@@ -84,7 +78,7 @@ def test_no_suspicious_rows(document_rows):
         for row in rows:
             label = row.label.strip()
             assert len(label) >= 2, f"{pdf_path.name} sida {page_num}: tom/kort etikett {row!r}"
-            assert row.values, f"{pdf_path.name} sida {page_num}: inga värden {row!r}"
+            assert row.present_values, f"{pdf_path.name} sida {page_num}: inga värden {row!r}"
             assert any(c.isalpha() for c in label), (
                 f"{pdf_path.name} sida {page_num}: etikett utan bokstäver (troligen "
                 f"läckt tabellinnehåll) {row!r}"
@@ -105,9 +99,9 @@ def test_balance_sheet_balances(document_rows):
         for row in rows_by_page[page_num]:
             label_lower = row.label.strip().lower()
             if label_lower in ("summa tillgångar",):
-                assets_total = _parse_swedish_number(row.values[0])
+                assets_total = _parse_swedish_number(row.present_values[0])
             elif label_lower in ("summa eget kapital och skulder",):
-                liabilities_equity_total = _parse_swedish_number(row.values[0])
+                liabilities_equity_total = _parse_swedish_number(row.present_values[0])
 
     if assets_total is None or liabilities_equity_total is None:
         pytest.skip(
@@ -128,8 +122,30 @@ def test_values_are_parseable_numbers(document_rows):
     number_re = re.compile(r"^[−\-–]?\d[\d\s.,]*$")
     for page_num, rows in rows_by_page.items():
         for row in rows:
-            for value in row.values:
+            for value in row.present_values:
                 assert number_re.match(value), (
                     f"{pdf_path.name} sida {page_num}: värdet {value!r} i {row.label!r} "
                     f"ser inte ut som ett tal"
                 )
+
+
+def test_values_are_positionally_aligned_with_columns(document_rows):
+    """Varje rad måste ha exakt lika många värdeplatser som kolumner, och
+    varje kolumn måste ha en rubrik.
+
+    Detta skyddar mot den bugg som hittades i Fas 3: värdena lagrades
+    tidigare komprimerade utan luckor, så en rad som saknade värden för
+    vissa år (vanligt i elvaårsöversikter) fick värdena förskjutna och
+    kopplades till fel år vid läsning."""
+    pdf_path, _, rows_by_page = document_rows
+    for page_num, rows in rows_by_page.items():
+        for row in rows:
+            assert row.columns, f"{pdf_path.name} sida {page_num}: saknar kolumnrubriker {row!r}"
+            assert len(row.values) == len(row.columns), (
+                f"{pdf_path.name} sida {page_num}: {len(row.values)} värdeplatser men "
+                f"{len(row.columns)} kolumner i {row.label!r} - värden och kolumner "
+                f"är inte positionellt kopplade"
+            )
+            assert all(c.strip() for c in row.columns), (
+                f"{pdf_path.name} sida {page_num}: tom kolumnrubrik i {row!r}"
+            )

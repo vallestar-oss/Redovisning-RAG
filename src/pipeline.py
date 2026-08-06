@@ -20,13 +20,12 @@ from .tables import extract_financial_rows
 
 import pdfplumber
 
-# SkiStars koncernsidor har en väsentligt rörigare layout (tabeller sida vid
-# sida med avvikande underrubriker, inbäddat diagram) som ger fel
-# extraktion - se docs/DECISIONS.md. Beslut: använd moderbolagets räkningar
-# för SkiStar, koncernens för övriga bolag.
-_LEVEL_BY_COMPANY_PREFIX = {
-    "skistar": "moderbolag",
-}
+# Koncernnivå för samtliga bolag. SkiStar kördes tidigare på moderbolags-
+# nivå eftersom koncernsidornas layout (tabeller sida vid sida, inbäddat
+# stapeldiagram) gav felaktig extraktion; båda orsakerna är nu åtgärdade
+# och alla tre SkiStar-år balanserar på koncernnivå - se
+# docs/DECISIONS_FAS3.md.
+_LEVEL_BY_COMPANY_PREFIX: dict[str, str] = {}
 _DEFAULT_LEVEL = "koncern"
 
 
@@ -65,7 +64,11 @@ def process_document(pdf_path: Path) -> dict:
                 rows = extract_financial_rows(pdf.pages[i - 1])
                 entry["statement_type"] = statement_type
                 entry["table_rows"] = [
-                    {"label": r.label, "values": r.values} for r in rows
+                    # `values` är positionellt kopplad till `columns`
+                    # (None = kolumnen saknar värde på raden) - se
+                    # FinancialRow i src/tables.py.
+                    {"label": r.label, "values": r.values, "columns": r.columns}
+                    for r in rows
                 ]
             pages_data.append(entry)
 

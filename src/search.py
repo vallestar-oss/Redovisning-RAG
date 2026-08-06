@@ -1,8 +1,8 @@
 """Enkel sökfunktion: text in, topp-k relevanta chunkar ut med källa synlig.
 
-Bygger på Chroma-indexet från `src/vectorstore.py`. Samma embeddingmodell
-(all-MiniLM-L6-v2) används för frågan som för indexeringen - avgörande för
-att avstånden i vektorrymden ska vara jämförbara.
+Bygger på Chroma-indexet från `src/vectorstore.py`. Både modellvalet och
+frågeprefixet importeras därifrån - frågan måste embeddas med exakt samma
+modell och konvention som dokumenten, annars blir avstånden meningslösa.
 """
 
 from dataclasses import dataclass
@@ -11,7 +11,7 @@ from pathlib import Path
 import chromadb
 from sentence_transformers import SentenceTransformer
 
-from .vectorstore import COLLECTION_NAME, EMBEDDING_MODEL
+from .vectorstore import COLLECTION_NAME, EMBEDDING_MODEL, embed_query
 
 
 @dataclass
@@ -36,9 +36,8 @@ class Searcher:
         self._model = SentenceTransformer(EMBEDDING_MODEL)
 
     def search(self, query: str, top_k: int = 5, where: dict | None = None) -> list[SearchResult]:
-        query_embedding = self._model.encode([query]).tolist()
         res = self._collection.query(
-            query_embeddings=query_embedding,
+            query_embeddings=[embed_query(self._model, query)],
             n_results=top_k,
             where=where,
             include=["metadatas", "documents", "distances"],
