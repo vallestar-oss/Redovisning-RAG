@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 .env
 data/raw/*.pdf
+data/processed/
 data/chroma/
 .streamlit/secrets.toml
 .DS_Store
