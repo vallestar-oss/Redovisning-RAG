@@ -35,13 +35,13 @@ def test_no_chunk_missing_metadata(document_chunks):
     for c in chunks:
         for field in ("chunk_id", "document", "company", "fiscal_year", "chunk_type", "pages", "text"):
             assert c.get(field), f"{path.name}: chunk saknar '{field}': {c!r}"
-        assert c["chunk_type"] in ("text", "table"), f"{path.name}: okänd chunk_type {c!r}"
+        assert c["chunk_type"] in ("text", "table", "fact"), f"{path.name}: okänd chunk_type {c!r}"
         assert isinstance(c["pages"], list) and all(isinstance(p, int) for p in c["pages"]), (
             f"{path.name}: 'pages' ska vara en lista av sidnummer {c!r}"
         )
-        if c["chunk_type"] == "table":
+        if c["chunk_type"] in ("table", "fact"):
             assert c["section"] in VALID_STATEMENT_TYPES, (
-                f"{path.name}: tabellchunk med ogiltig 'section' {c!r}"
+                f"{path.name}: {c['chunk_type']}-chunk med ogiltig 'section' {c!r}"
             )
         else:
             assert c["section"] is None, f"{path.name}: textchunk ska ha section=None {c!r}"
@@ -55,11 +55,15 @@ def test_chunk_ids_unique_within_document(document_chunks):
 
 
 def test_no_duplicate_chunk_text_within_document(document_chunks):
-    """Två chunkar med identiskt textinnehåll är antingen ett bugg-tecken
-    (samma tabellrad extraherad två gånger) eller bara slöseri med
-    embedding-utrymme i Fas 3 - flaggas i båda fallen."""
+    """Två LÖPTEXT-chunkar med identiskt innehåll är ett bugg-tecken (t.ex.
+    en återkommande sidfot som fångats som egen chunk). Begränsat till
+    chunk_type "text": table/fact-chunkar kan legitimt upprepa samma
+    etikett/värde (t.ex. "Årets resultat" som både delsumma och slutsumma
+    i en resultaträkning, eller en rad som förekommer likadant i både
+    huvudräkningen och Volvos elvaårsöversikt) - det är verklig, upprepad
+    data i källdokumentet, inte ett chunkningsfel."""
     path, chunks = document_chunks
-    texts = [c["text"].strip() for c in chunks]
+    texts = [c["text"].strip() for c in chunks if c["chunk_type"] == "text"]
     duplicates = [text for text, count in Counter(texts).items() if count > 1]
     assert not duplicates, (
         f"{path.name}: {len(duplicates)} textinnehåll förekommer i flera chunkar, "

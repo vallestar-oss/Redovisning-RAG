@@ -36,7 +36,7 @@ class Chunk:
     document: str
     company: str
     fiscal_year: str
-    chunk_type: str  # "text" eller "table"
+    chunk_type: str  # "text" (löptext), "table" (hel huvudräkning) eller "fact" (en tabellrad, naturligt formulerad - se Fas 3)
     section: str | None  # statement_type ("resultaträkning" osv.) för tabellchunkar, annars None
     pages: list[int] = field(default_factory=list)
     text: str = ""
@@ -104,13 +104,32 @@ def _chunk_text(text: str, target_chars: int = _TARGET_CHARS, max_chars: int = _
     return chunks
 
 
+def _format_values(values: list[str]) -> str:
+    if len(values) == 1:
+        return values[0]
+    if len(values) == 2:
+        return f"{values[0]} (föregående period: {values[1]})"
+    return ", ".join(values)  # flerårsöversikt - fler än två perioder
+
+
+def _row_sentence(company: str, statement_type: str, fiscal_year: str, row: dict) -> str:
+    company_cap = company[:1].upper() + company[1:]
+    return (
+        f"{company_cap} {statement_type} {fiscal_year}: {row['label']} var "
+        f"{_format_values(row['values'])}."
+    )
+
+
 def _render_table_chunk(statement_type: str, company: str, fiscal_year: str, rows: list[dict]) -> str:
-    header = f"{statement_type.capitalize()} - {company} {fiscal_year}"
-    lines = [header]
-    for row in rows:
-        values = " / ".join(row["values"])
-        lines.append(f"{row['label']}: {values}")
-    return "\n".join(lines)
+    """Renderar HELA tabellen som naturligt formulerade meningar, en per
+    rad. Fas 3:s retrieval-tester visade att det tidigare "etikett: v1 / v2"-
+    formatet låg långt ifrån en naturligt formulerad fråga i embedding-
+    rymden (avstånd 0,335 mot 0,180 för samma sakuppgift naturligt
+    formulerad - se docs/DECISIONS_FAS3.md) - embeddingmodellen är tränad på
+    löpande språk, inte tätt tabellformat."""
+    intro = f"{company[:1].upper()}{company[1:]} {statement_type} {fiscal_year}."
+    sentences = [_row_sentence(company, statement_type, fiscal_year, row) for row in rows]
+    return " ".join([intro] + sentences)
 
 
 def chunk_document(doc: dict) -> list[Chunk]:
@@ -140,6 +159,27 @@ def chunk_document(doc: dict) -> list[Chunk]:
                 text=text,
             )
         )
+
+        # Fakta-chunkar: en per rad, naturligt formulerad, UTÖVER hela
+        # tabellchunken ovan. En hel huvudräkning som en enda chunk späder ut
+        # embeddingen (medelvärdet av 10-20 poster) och gör att en fråga om
+        # EN specifik post (t.ex. "nettoomsättning") inte hittar rätt chunk -
+        # se docs/DECISIONS_FAS3.md. Radchunkarna ger precision; helhets-
+        # chunken ovan behålls för sammanhang (t.ex. "visa hela balans-
+        # räkningen").
+        for i, row in enumerate(rows):
+            chunks.append(
+                Chunk(
+                    chunk_id=f"{doc['document']}::{statement_type}::rad{i}",
+                    document=doc["document"],
+                    company=doc["company"],
+                    fiscal_year=doc["fiscal_year"],
+                    chunk_type="fact",
+                    section=statement_type,
+                    pages=sorted(page_numbers),
+                    text=_row_sentence(doc["company"], statement_type, doc["fiscal_year"], row),
+                )
+            )
 
     seen_text: set[str] = set()
     for page in doc["pages"]:
