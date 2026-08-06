@@ -7,5 +7,6 @@ data/raw/*.pdf
 data/processed/
 data/chunks/
 data/chroma/
+data/evaluation_run.json
 .streamlit/secrets.toml
 .DS_Store
