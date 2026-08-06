@@ -40,7 +40,15 @@ from .vectorstore import COLLECTION_NAME, EMBEDDING_MODEL, embed_query
 
 # Kandidatdjup per delsökning innan fusionen. Måste vara klart större än
 # top_k för att fusionen ska ha något att arbeta med.
-_CANDIDATE_DEPTH = 50
+#
+# Höjt från 50 till 100 efter mätning (docs/DECISIONS_FAS4.md): en post som
+# krävs för att beräkna ett nyckeltal ("Rörelseresultat" för
+# rörelsemarginal) rankades ~75-82 i både BM25 och vektorsökningen, trots
+# att expand_query() lade till exakt rätt sökterm. Orsaken är att
+# fakta-chunkarna är korta och strukturellt likartade ("X var N (2023), M
+# (2022)."), så tusentals andra rader delar samma boilerplate-fraser och
+# tränger undan den rätta posten inom ett djup på bara 50.
+_CANDIDATE_DEPTH = 100
 # RRF-konstant. Styr hur mycket en topplacering premieras: ett lågt k gör
 # skillnaden mellan rank 1 och rank 15 stor, ett högt k gör dem nästan
 # likvärdiga.
@@ -72,22 +80,71 @@ _MIN_FILTERED_HITS = 3
 _YEAR_RE = re.compile(r"(19|20)\d{2}")
 _TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 
+# Nyckeltal som ska BERÄKNAS (docs/SCOPE.md) förekommer sällan ordagrant i
+# källmaterialet - "rörelsemarginal" är inte en textsträng som står i någon
+# rad, bara "Rörelseresultat" och "Nettoomsättning" var för sig. Uppmätt: en
+# fråga om "rörelsemarginal" hittade Nettoomsättning på rank 5 men
+# Rörelseresultat först på rank 41 (utanför även top_k=20) - varken BM25
+# eller embeddingen kopplar ihop kvotens NAMN med sina ingående POSTER. En
+# högre top_k löser därför inte problemet, den späder bara ut kontexten.
+#
+# Fixen är att EXPANDERA frågan med posternas egna namn innan sökningen körs,
+# så att båda termerna får en chans att matcha lexikalt (BM25) och
+# semantiskt (embedding). Formlerna är hämtade direkt ur docs/SCOPE.md.
+_RATIO_TERM_EXPANSIONS: dict[str, list[str]] = {
+    "bruttomarginal": ["bruttovinst", "nettoomsättning", "omsättning"],
+    "rörelsemarginal": ["rörelseresultat", "nettoomsättning", "omsättning"],
+    "vinstmarginal": ["nettoresultat", "årets resultat", "nettoomsättning", "omsättning"],
+    "soliditet": ["eget kapital", "summa tillgångar"],
+    "skuldsättningsgrad": ["summa skulder", "eget kapital"],
+    "kassalikviditet": ["omsättningstillgångar", "varulager", "kortfristiga skulder"],
+    "roe": ["nettoresultat", "eget kapital"],
+    "avkastning på eget kapital": ["nettoresultat", "eget kapital"],
+    "roa": ["nettoresultat", "summa tillgångar"],
+    "avkastning på totalt kapital": ["nettoresultat", "summa tillgångar"],
+    "fritt kassaflöde": ["kassaflöde från den löpande verksamheten", "investeringar"],
+    "ebitda": ["rörelseresultat", "avskrivningar"],
+}
+
 
 def _tokenize(text: str) -> list[str]:
     return _TOKEN_RE.findall(text.lower())
 
 
+def expand_query(query: str) -> str:
+    """Lägger till underliggande postnamn när frågan nämner ett beräknat
+    nyckeltal. Returnerar frågan oförändrad annars."""
+    lowered = query.lower()
+    extra_terms: list[str] = []
+    for ratio, terms in _RATIO_TERM_EXPANSIONS.items():
+        if ratio in lowered:
+            extra_terms.extend(terms)
+    if not extra_terms:
+        return query
+    return f"{query} " + " ".join(dict.fromkeys(extra_terms))
+
+
 @dataclass
 class QueryFilters:
     company: str | None = None
-    fiscal_year: str | None = None
+    # Flera år stöds explicit (inte bara ett) för flerårs-/YoY-frågor. Att
+    # bara stänga av filtret helt när >1 år nämns visade sig otillräckligt:
+    # utan NÅGOT årsfilter vinner ofta ett HELT ANNAT dokuments chunkar,
+    # eftersom varje rad redan innehåller föregående års jämförelsetal
+    # ("X var A (2024), B (2023)") - volvo_2025.pdf:s rader nämner alltså
+    # "2024" lika ofta som volvo_2024.pdf:s gör. Filtret måste därför
+    # begränsa till ALLA nämnda år (matcha vilket som helst av dem), inte
+    # bara till inget alls. Se docs/DECISIONS_FAS4.md.
+    fiscal_years: frozenset[str] = frozenset()
 
     def as_chroma_where(self) -> dict | None:
         clauses = []
         if self.company:
             clauses.append({"company": self.company})
-        if self.fiscal_year:
-            clauses.append({"fiscal_year": self.fiscal_year})
+        if len(self.fiscal_years) == 1:
+            clauses.append({"fiscal_year": next(iter(self.fiscal_years))})
+        elif len(self.fiscal_years) > 1:
+            clauses.append({"fiscal_year": {"$in": sorted(self.fiscal_years)}})
         if not clauses:
             return None
         return clauses[0] if len(clauses) == 1 else {"$and": clauses}
@@ -110,6 +167,21 @@ def parse_query_filters(
 
     Sätts inget kandidatvärde som faktiskt finns sätts inget årsfilter -
     hellre ofiltrerat än fel filtrerat.
+
+    Frågan kan nämna FLERA olika giltiga räkenskapsår ("...från 2023 till
+    2024?", "...utvecklingen 2023-2025?", prioritet 2 i docs/SCOPE.md).
+    Samtliga nämnda år tas då med i filtret ($in), inte bara det första -
+    annars försvinner alla år utom ett ur träffmängden. Att ta bort
+    årsfiltret helt visade sig otillräckligt (se docs/DECISIONS_FAS4.md):
+    utan NÅGOT årsfilter vinner ofta fel dokument, eftersom varje rad redan
+    innehåller föregående års jämförelsetal ("X var A (2024), B (2023)") -
+    volvo_2025.pdf:s rader nämner alltså "2024" lika ofta som
+    volvo_2024.pdf:s gör.
+
+    Två skilda skrivsätt måste särskiljas:
+    - Brutet räkenskapsår ("2023/24", kort tvåsiffrigt slutår) - EN period.
+    - Årsintervall ("2023-2025", fullständigt fyrsiffrigt slutår) - FLERA
+      hela kalenderår, ett per år i intervallet.
     """
     lowered = query.lower()
 
@@ -120,19 +192,38 @@ def parse_query_filters(
     else:
         valid_years = set().union(*company_years.values()) if company_years else set()
 
-    years = [m.group(0) for m in _YEAR_RE.finditer(query)]
+    consumed_spans: list[tuple[int, int]] = []
     candidates: list[str] = []
-    # Brutet räkenskapsår skrivet som 2023/24, 2023/2024 eller 2023-24
-    for m in re.finditer(r"((?:19|20)\d{2})\s*[/\-–]\s*(\d{2}|\d{4})", query):
-        candidates.append(f"{m.group(1)}-{m.group(2)[-2:]}")
-    candidates.extend(years)
-    # Ett ensamt årtal kan också avse ett brutet räkenskapsår som SLUTAR
-    # det året (SkiStars "2024" = räkenskapsåret 2023-24).
-    candidates.extend(f"{int(y) - 1}-{y[-2:]}" for y in years)
+    # \d{4} provas FÖRE \d{2} i alternativet - annars matchar regexen bara
+    # de två första siffrorna av ett fyrsiffrigt slutår.
+    for m in re.finditer(r"((?:19|20)\d{2})\s*[/\-–]\s*(\d{4}|\d{2})", query):
+        start, end_raw = m.group(1), m.group(2)
+        consumed_spans.append(m.span())
+        if len(end_raw) == 2:
+            # Kort slutår: brutet räkenskapsår, en enda period.
+            candidates.append(f"{start}-{end_raw}")
+        else:
+            # Fullständigt slutår: ett intervall av hela kalenderår.
+            for y in range(int(start), int(end_raw) + 1):
+                candidates.append(str(y))
+                # Varje år i intervallet kan också vara slutet på ett brutet
+                # räkenskapsår för bolag som har sådant.
+                candidates.append(f"{y - 1}-{str(y)[-2:]}")
 
-    fiscal_year = next((c for c in candidates if c in valid_years), None)
+    def _already_consumed(match: re.Match) -> bool:
+        return any(start <= match.start() and match.end() <= end for start, end in consumed_spans)
 
-    return QueryFilters(company=company, fiscal_year=fiscal_year)
+    standalone_years = [
+        m.group(0) for m in _YEAR_RE.finditer(query) if not _already_consumed(m)
+    ]
+    candidates.extend(standalone_years)
+    # Ett fristående årtal kan också avse ett brutet räkenskapsår som
+    # SLUTAR det året (SkiStars "2024" = räkenskapsåret 2023-24).
+    candidates.extend(f"{int(y) - 1}-{y[-2:]}" for y in standalone_years)
+
+    matched_years = frozenset(c for c in candidates if c in valid_years)
+
+    return QueryFilters(company=company, fiscal_years=matched_years)
 
 
 def _rrf_fuse(ranked_lists: list[list[str]], k: int = _RRF_K) -> list[str]:
@@ -199,13 +290,13 @@ class HybridSearcher:
         return out
 
     def _allowed_ids(self, filters: QueryFilters) -> set[str] | None:
-        if not filters.company and not filters.fiscal_year:
+        if not filters.company and not filters.fiscal_years:
             return None
         return {
             cid
             for cid, c in self._chunks.items()
             if (not filters.company or c["company"] == filters.company)
-            and (not filters.fiscal_year or c["fiscal_year"] == filters.fiscal_year)
+            and (not filters.fiscal_years or c["fiscal_year"] in filters.fiscal_years)
         }
 
     def _to_result(self, chunk_id: str) -> SearchResult:
@@ -235,14 +326,19 @@ class HybridSearcher:
         where = filters.as_chroma_where()
         allowed = self._allowed_ids(filters)
 
-        vector_ids = self._vector_ids(query, where, _CANDIDATE_DEPTH)
-        bm25_ids = self._bm25_ids(query, allowed, _CANDIDATE_DEPTH)
+        # Expansionen görs EFTER filtertolkningen (som ska läsa frågan
+        # skriven av användaren, inte de tillagda posttermerna) men
+        # FÖRE själva sökningen, så både BM25 och embeddingen ser termerna.
+        search_query = expand_query(query)
+
+        vector_ids = self._vector_ids(search_query, where, _CANDIDATE_DEPTH)
+        bm25_ids = self._bm25_ids(search_query, allowed, _CANDIDATE_DEPTH)
 
         # Ett feltolkat filter får inte tömma resultatet - falla tillbaka
         # på ofiltrerad sökning hellre än att svara "hittade inget".
         if len(vector_ids) + len(bm25_ids) < _MIN_FILTERED_HITS and where is not None:
-            vector_ids = self._vector_ids(query, None, _CANDIDATE_DEPTH)
-            bm25_ids = self._bm25_ids(query, None, _CANDIDATE_DEPTH)
+            vector_ids = self._vector_ids(search_query, None, _CANDIDATE_DEPTH)
+            bm25_ids = self._bm25_ids(search_query, None, _CANDIDATE_DEPTH)
 
         fused = _rrf_fuse([vector_ids, bm25_ids])
         return [self._to_result(cid) for cid in fused[:top_k] if cid in self._chunks]
@@ -257,8 +353,9 @@ if __name__ == "__main__":
     searcher = HybridSearcher(root / "data" / "chroma", root / "data" / "chunks")
     user_query = " ".join(sys.argv[1:]) or "Vad var Volvos summa tillgångar 2023?"
     parsed = parse_query_filters(user_query, searcher._company_years)
+    years_label = ", ".join(sorted(parsed.fiscal_years)) or "-"
     print(f"Fråga: {user_query}")
-    print(f"Filter: bolag={parsed.company or '-'}  räkenskapsår={parsed.fiscal_year or '-'}\n")
+    print(f"Filter: bolag={parsed.company or '-'}  räkenskapsår={years_label}\n")
     for i, result in enumerate(searcher.search(user_query, top_k=5), 1):
         print(format_result(result, i))
         print()

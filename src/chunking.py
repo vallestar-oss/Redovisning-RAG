@@ -170,9 +170,18 @@ def chunk_document(doc: dict) -> list[Chunk]:
         if not page_numbers:
             continue
         statement_page_numbers.update(page_numbers)
-        rows = []
-        for pnum in page_numbers:
-            rows.extend(pages_by_number[pnum].get("table_rows", []))
+        # Behåll vilken SIDA varje rad kom från. En och samma "räkning" kan
+        # spänna över sidor som innehåller olika tabeller - Volvos
+        # balansräkning finns både som segmenterad huvudräkning (s. 62-63)
+        # och som elvaårsöversikt (s. 224). Utan radens egen sida skulle en
+        # siffra från elvaårsöversikten hänvisas även till s. 62-63, där den
+        # tabellen inte finns, och källhänvisningen vore inte spårbar.
+        rows_with_page = [
+            (pnum, row)
+            for pnum in page_numbers
+            for row in pages_by_number[pnum].get("table_rows", [])
+        ]
+        rows = [row for _, row in rows_with_page]
         if not rows:
             continue
         text = _render_table_chunk(statement_type, doc["company"], doc["fiscal_year"], rows)
@@ -196,7 +205,7 @@ def chunk_document(doc: dict) -> list[Chunk]:
         # se docs/DECISIONS_FAS3.md. Radchunkarna ger precision; helhets-
         # chunken ovan behålls för sammanhang (t.ex. "visa hela balans-
         # räkningen").
-        for i, row in enumerate(rows):
+        for i, (page_number, row) in enumerate(rows_with_page):
             chunks.append(
                 Chunk(
                     chunk_id=f"{doc['document']}::{statement_type}::rad{i}",
@@ -205,7 +214,8 @@ def chunk_document(doc: dict) -> list[Chunk]:
                     fiscal_year=doc["fiscal_year"],
                     chunk_type="fact",
                     section=statement_type,
-                    pages=sorted(page_numbers),
+                    # Radens EGEN sida - inte hela räkningens sidlista.
+                    pages=[page_number],
                     text=_row_sentence(doc["company"], statement_type, doc["fiscal_year"], row),
                 )
             )

@@ -86,6 +86,38 @@ def test_table_chunks_present_for_every_located_statement(document_chunks):
             )
 
 
+def test_fact_chunks_cite_exactly_one_page(document_chunks):
+    """En fakta-chunk är EN tabellrad och finns därför på exakt en sida.
+
+    Tidigare ärvde varje fakta-chunk hela räkningens sidlista. För Volvo
+    innebar det att en siffra från elvaårsöversikten (s. 224) även
+    hänvisades till den segmenterade huvudräkningen (s. 62-63), där den
+    tabellen inte finns - källhänvisningen gick alltså inte att slå upp."""
+    path, chunks = document_chunks
+    for c in chunks:
+        if c["chunk_type"] != "fact":
+            continue
+        assert len(c["pages"]) == 1, (
+            f"{path.name}: fakta-chunk {c['chunk_id']} hänvisar till "
+            f"{c['pages']} - en enskild tabellrad finns bara på en sida"
+        )
+
+
+def test_fact_chunk_pages_exist_in_source_document(document_chunks):
+    """Sidan en fakta-chunk hänvisar till måste vara en sida där den
+    räkningen faktiskt lokaliserades."""
+    path, chunks = document_chunks
+    doc = json.loads((path.parent.parent / "processed" / path.name).read_text(encoding="utf-8"))
+    for c in chunks:
+        if c["chunk_type"] != "fact":
+            continue
+        valid_pages = set(doc["statement_pages"].get(c["section"], []))
+        assert set(c["pages"]) <= valid_pages, (
+            f"{path.name}: {c['chunk_id']} hänvisar till {c['pages']} men "
+            f"{c['section']} finns bara på sidorna {sorted(valid_pages)}"
+        )
+
+
 def test_text_chunks_within_size_bounds(document_chunks):
     """Textchunkar ska hålla sig inom den avsedda storleksramen - annars
     har mening-grupperingen i _chunk_text gått sönder."""

@@ -25,6 +25,17 @@
 `None`), `pages` (lista - stödjer flersidiga tabellchunkar). Detta är vad
 som gör källhänvisning möjlig i Fas 3+.
 
+**Rättelse 2026-08-06 (upptäckt i Fas 4): fakta-chunkar ärvde fel sidor.**
+Varje fakta-chunk fick hela räkningens sidlista istället för radens egen
+sida. För Volvo spänner "balansräkning" över två helt olika tabeller - den
+segmenterade huvudräkningen (s. 62-63) och elvaårsöversikten (s. 224) - så
+en siffra hämtad från elvaårsöversikten hänvisades även till s. 62-63, där
+den tabellen inte finns. Källhänvisningen gick alltså inte att slå upp,
+vilket underminerar hela poängen med Fas 4. Åtgärdat genom att behålla
+radens ursprungssida genom chunkningen; fakta-chunkar har nu exakt ett
+sidnummer. Två tester (`test_fact_chunks_cite_exactly_one_page`,
+`test_fact_chunk_pages_exist_in_source_document`) skyddar mot återfall.
+
 **Testverifiering (steg 3) hittade två buggar** som fixades: dels
 överdimensionerade chunkar på sidor utan meningsskiljande punktuering
 (löst med radbaserad fallback-delning), dels triviala dubbletter av

@@ -52,27 +52,39 @@ GROUND_TRUTH = [
 # --- frågetolkning (kräver inget index) ---------------------------------
 
 @pytest.mark.parametrize(
-    "query, company, fiscal_year",
+    "query, company, fiscal_years",
     [
-        ("Vad var Hexatronics nettoomsättning 2023?", "hexatronic", "2023"),
-        ("Vad var Volvos rörelseresultat 2024?", "volvo", "2024"),
-        ("Volvokoncernens eget kapital 2023", "volvo", "2023"),
-        ("Vad var SkiStars nettoomsättning 2023/24?", "skistar", "2023-24"),
+        ("Vad var Hexatronics nettoomsättning 2023?", "hexatronic", {"2023"}),
+        ("Vad var Volvos rörelseresultat 2024?", "volvo", {"2024"}),
+        ("Volvokoncernens eget kapital 2023", "volvo", {"2023"}),
+        ("Vad var SkiStars nettoomsättning 2023/24?", "skistar", {"2023-24"}),
         # Ensamt årtal för bolag med brutet räkenskapsår ska tolkas som det
         # räkenskapsår som SLUTAR det året, inte som ett kalenderår som inte
         # finns för bolaget.
-        ("SkiStars nettoomsättning 2024", "skistar", "2023-24"),
-        ("SkiStars summa tillgångar 2025", "skistar", "2024-25"),
+        ("SkiStars nettoomsättning 2024", "skistar", {"2023-24"}),
+        ("SkiStars summa tillgångar 2025", "skistar", {"2024-25"}),
         # Årtal utanför materialet ska inte ge ett årsfilter alls.
-        ("SkiStars omsättning 2019", "skistar", None),
+        ("SkiStars omsättning 2019", "skistar", set()),
         # Ingen entydig signal alls -> inget filter.
-        ("Hur har soliditeten utvecklats?", None, None),
+        ("Hur har soliditeten utvecklats?", None, set()),
+        # Flera olika giltiga år i samma fråga (YoY/flerårstrend, prioritet 2
+        # i docs/SCOPE.md) ska ge ETT FILTER SOM TÄCKER ALLA nämnda år, inte
+        # bara det första och inte inget filter alls - se
+        # docs/DECISIONS_FAS4.md för varför "inget filter" inte räcker.
+        ("Hur har Hexatronics nettoomsättning utvecklats 2023-2025?",
+         "hexatronic", {"2023", "2024", "2025"}),
+        ("Hur har Volvos rörelseresultat förändrats från 2023 till 2024?",
+         "volvo", {"2023", "2024"}),
+        # Regressionsfall: ett brutet räkenskapsår ("2023/24") är EN period,
+        # inte två - ska fortsätta ge ett exakt filter, inte tolkas som en
+        # flerårsfråga bara för att uttrycket innehåller två siffergrupper.
+        ("SkiStars nettoomsättning 2023/24", "skistar", {"2023-24"}),
     ],
 )
-def test_parse_query_filters(query, company, fiscal_year):
+def test_parse_query_filters(query, company, fiscal_years):
     filters = parse_query_filters(query, COMPANY_YEARS)
     assert filters.company == company
-    assert filters.fiscal_year == fiscal_year
+    assert filters.fiscal_years == frozenset(fiscal_years)
 
 
 def test_filters_build_valid_chroma_where():
@@ -83,6 +95,11 @@ def test_filters_build_valid_chroma_where():
     only_company = parse_query_filters("Volvos omsättning", COMPANY_YEARS)
     assert only_company.as_chroma_where() == {"company": "volvo"}
     assert parse_query_filters("omsättning", COMPANY_YEARS).as_chroma_where() is None
+
+    multi_year = parse_query_filters("Volvos omsättning 2023 till 2024", COMPANY_YEARS)
+    assert multi_year.as_chroma_where() == {
+        "$and": [{"company": "volvo"}, {"fiscal_year": {"$in": ["2023", "2024"]}}]
+    }
 
 
 def test_rrf_prefers_consensus_over_single_list():
@@ -160,3 +177,31 @@ def test_chunk_ids_are_unique_in_results(searcher):
     """Fusionen får inte returnera samma chunk två gånger."""
     ids = [r.chunk_id for r in searcher.search("Volvos rörelseresultat 2024", top_k=10)]
     assert len(ids) == len(set(ids))
+
+
+def test_ratio_query_retrieves_both_underlying_facts(searcher):
+    """Ett nyckeltal som ska BERÄKNAS (docs/SCOPE.md) kräver att BÅDA
+    ingående poster finns i samma kontext. "Rörelsemarginal" står inte
+    ordagrant i någon rad - bara "Rörelseresultat" och "Nettoomsättning"
+    var för sig gör det. Utan query-expansion hittades bara den ena
+    posten även vid top_k=20 (se docs/DECISIONS_FAS4.md)."""
+    results = searcher.search("Vad var Hexatronics rörelsemarginal 2023?", top_k=8)
+    ids = {r.chunk_id for r in results}
+    needed = {
+        "hexatronic_2023.pdf::resultaträkning::rad0",  # Nettoomsättning
+        "hexatronic_2023.pdf::resultaträkning::rad10",  # Rörelseresultat
+    }
+    assert needed <= ids, f"saknar: {needed - ids}"
+
+
+def test_multi_year_query_covers_all_mentioned_years(searcher):
+    """En flerårsfråga (prioritet 2 i docs/SCOPE.md) får inte tystats ner
+    till bara det först nämnda året - resultaten ska spänna över minst två
+    olika dokument (olika räkenskapsår) för samma bolag."""
+    results = searcher.search(
+        "Hur har Volvos rörelseresultat förändrats från 2023 till 2024?", top_k=10
+    )
+    documents = {r.document for r in results if r.company == "volvo"}
+    assert len({"volvo_2023.pdf", "volvo_2024.pdf"} & documents) == 2, (
+        f"täcker inte båda räkenskapsåren, dokument i träffarna: {documents}"
+    )
