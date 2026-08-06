@@ -5,3 +5,4 @@ chromadb==1.5.9
 rank-bm25==0.2.2
 openai==2.53.0
 python-dotenv==1.2.2
+streamlit==1.61.1

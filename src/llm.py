@@ -37,6 +37,10 @@ class DeepSeekProvider:
     # samma underlag ska ge samma svar, både för testbarhet och för att
     # användaren ska kunna lita på siffrorna.
     temperature: float = 0.0
+    # Utan explicit gräns kan ett UI-anrop hänga länge om DeepSeek är
+    # långsamt eller nätverket strular. Fas 6 fångar openai.APITimeoutError
+    # och visar ett tydligt felmeddelande istället för en frusen skärm.
+    timeout: float = 30.0
 
     def __post_init__(self) -> None:
         key = self.api_key or os.environ.get("DEEPSEEK_API_KEY")
@@ -45,7 +49,7 @@ class DeepSeekProvider:
                 "DEEPSEEK_API_KEY saknas. Lägg den i en .env-fil i "
                 "projektroten (se .env.example) eller sätt miljövariabeln."
             )
-        self._client = OpenAI(api_key=key, base_url=self.base_url)
+        self._client = OpenAI(api_key=key, base_url=self.base_url, timeout=self.timeout)
 
     def complete(self, system: str, user: str) -> str:
         response = self._client.chat.completions.create(
