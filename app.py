@@ -7,16 +7,27 @@ synlig direkt vid svaret.
 """
 
 import json
+import os
 from pathlib import Path
 
 import streamlit as st
 from openai import APIConnectionError, APITimeoutError
 
-from src.answer import answer_question
-from src.chunking import _display_company
-from src.evaluation import EVAL_SET
-from src.hybrid_search import HybridSearcher
-from src.llm import get_provider
+# Streamlit Clouds "Secrets"-panel populerar st.secrets, inte os.environ.
+# Resten av koden (src/llm.py, src/migrate_to_cloud.py) läser nycklar via
+# os.environ/python-dotenv, precis som lokalt - så vi bryggar över dem här,
+# INNAN något annat i appen importeras eller körs. Lokalt är st.secrets tom
+# (ingen .streamlit/secrets.toml, se .gitignore) och .env läses som vanligt.
+for _key, _value in st.secrets.items():
+    os.environ.setdefault(_key, str(_value))
+
+import chromadb  # noqa: E402 - måste komma efter secrets-bryggan ovan
+
+from src.answer import answer_question  # noqa: E402
+from src.chunking import _display_company  # noqa: E402
+from src.evaluation import EVAL_SET  # noqa: E402
+from src.hybrid_search import HybridSearcher  # noqa: E402
+from src.llm import get_provider  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent
 _MAX_QUESTION_LENGTH = 300
@@ -26,7 +37,18 @@ st.set_page_config(page_title="Årsredovisnings-RAG", page_icon="📊", layout="
 
 @st.cache_resource(show_spinner="Laddar sök- och språkmodell...")
 def _load_pipeline():
-    searcher = HybridSearcher(ROOT / "data" / "chroma", ROOT / "data" / "chunks")
+    # I produktion (Streamlit Cloud) finns CHROMA_API_KEY och vi pratar mot
+    # Chroma Cloud (se docs/DECISIONS_FAS7.md). Lokalt är den tom och
+    # HybridSearcher faller tillbaka på den lokala data/chroma-mappen -
+    # samma explicita mönster som src/migrate_to_cloud.py.
+    client = None
+    if os.environ.get("CHROMA_API_KEY"):
+        client = chromadb.CloudClient(
+            api_key=os.environ["CHROMA_API_KEY"],
+            tenant=os.environ.get("CHROMA_TENANT"),
+            database=os.environ.get("CHROMA_DATABASE"),
+        )
+    searcher = HybridSearcher(ROOT / "data" / "chroma", ROOT / "data" / "chunks", client=client)
     provider = get_provider("deepseek")
     return searcher, provider
 
