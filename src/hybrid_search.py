@@ -246,11 +246,17 @@ class HybridSearcher:
 
     def __init__(
         self,
-        persist_dir: Path,
+        persist_dir: Path | None,
         chunks_dir: Path,
         collection_name: str = COLLECTION_NAME,
+        client: chromadb.ClientAPI | None = None,
     ):
-        self._client = chromadb.PersistentClient(path=str(persist_dir))
+        # `client` är ett explicit injektionspunkt (samma mönster som
+        # LLMProvider i src/llm.py): anroparen avgör moln vs lokalt, aldrig
+        # en dold miljövariabel-koll här. Annars skulle testsviten (som
+        # pekar mot den lokala data/chroma-mappen) tyst börja träffa
+        # Chroma Cloud så fort CHROMA_API_KEY finns i .env.
+        self._client = client or chromadb.PersistentClient(path=str(persist_dir))
         self._collection = self._client.get_collection(collection_name)
         self._model = SentenceTransformer(EMBEDDING_MODEL)
 
@@ -300,7 +306,17 @@ class HybridSearcher:
         }
 
     def _to_result(self, chunk_id: str) -> SearchResult:
-        c = self._chunks[chunk_id]
+        c = self._chunks.get(chunk_id)
+        if c is None:
+            # Chroma Cloud-kvoten tvingade tre stora tabellchunkar
+            # (Volvos balansräkningar) att delas vid molnuppladdningen
+            # (src/migrate_to_cloud.py::_split_oversized), med id:n som
+            # "<original>::del1", "::del2" osv. Den lokala chunks_dir-datan
+            # är oförändrad och känner bara till originalet - slå upp på
+            # bas-id:t istället, så svaret ändå får hela tabellen (bättre
+            # kontext än en halv tabell) och rätt källhänvisning.
+            base_id = re.sub(r"::del\d+$", "", chunk_id)
+            c = self._chunks[base_id]
         return SearchResult(
             chunk_id=chunk_id,
             document=c["document"],
@@ -341,7 +357,23 @@ class HybridSearcher:
             bm25_ids = self._bm25_ids(search_query, None, _CANDIDATE_DEPTH)
 
         fused = _rrf_fuse([vector_ids, bm25_ids])
-        return [self._to_result(cid) for cid in fused[:top_k] if cid in self._chunks]
+
+        # Bas-id-avdubbling: en delad chunk (se _to_result) kan dyka upp två
+        # gånger i fused - en gång som "::delN" (via vektorsökningen mot
+        # molnet) och en gång som originalet (via BM25, som alltid indexerar
+        # den lokala helheten). Båda pekar på identiskt samma svarstext, så
+        # utan avdubbling skulle en post i top_k slösas på en dublett.
+        results: list[SearchResult] = []
+        seen_base_ids: set[str] = set()
+        for cid in fused:
+            base_id = cid if cid in self._chunks else re.sub(r"::del\d+$", "", cid)
+            if base_id not in self._chunks or base_id in seen_base_ids:
+                continue
+            seen_base_ids.add(base_id)
+            results.append(self._to_result(cid))
+            if len(results) >= top_k:
+                break
+        return results
 
 
 if __name__ == "__main__":

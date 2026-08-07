@@ -55,8 +55,18 @@ def _chunk_to_metadata(chunk: dict) -> dict:
     }
 
 
-def build_index(chunks_dir: Path, persist_dir: Path, collection_name: str = COLLECTION_NAME):
-    client = chromadb.PersistentClient(path=str(persist_dir))
+def build_index(
+    chunks_dir: Path,
+    persist_dir: Path | None = None,
+    collection_name: str = COLLECTION_NAME,
+    client: chromadb.ClientAPI | None = None,
+):
+    # `client` låter anroparen peka mot Chroma Cloud (t.ex. en migrerings-
+    # skript) utan att den här funktionens standardbeteende - lokal
+    # PersistentClient, det tester och lokal utveckling förlitar sig på -
+    # förändras. Se src/hybrid_search.py för samma mönster.
+    if client is None:
+        client = chromadb.PersistentClient(path=str(persist_dir))
     try:
         client.delete_collection(collection_name)
     except Exception:

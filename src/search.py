@@ -30,8 +30,15 @@ class SearchResult:
 class Searcher:
     """Laddar modellen och Chroma-collection en gång, återanvänds för flera sökningar."""
 
-    def __init__(self, persist_dir: Path, collection_name: str = COLLECTION_NAME):
-        self._client = chromadb.PersistentClient(path=str(persist_dir))
+    def __init__(
+        self,
+        persist_dir: Path | None,
+        collection_name: str = COLLECTION_NAME,
+        client: chromadb.ClientAPI | None = None,
+    ):
+        # Se HybridSearcher (src/hybrid_search.py) för motiveringen: explicit
+        # klient-injektion istället för en dold miljövariabel-koll.
+        self._client = client or chromadb.PersistentClient(path=str(persist_dir))
         self._collection = self._client.get_collection(collection_name)
         self._model = SentenceTransformer(EMBEDDING_MODEL)
 
