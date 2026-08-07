@@ -12,14 +12,20 @@ from pathlib import Path
 
 import streamlit as st
 from openai import APIConnectionError, APITimeoutError
+from streamlit.errors import StreamlitSecretNotFoundError
 
 # Streamlit Clouds "Secrets"-panel populerar st.secrets, inte os.environ.
 # Resten av koden (src/llm.py, src/migrate_to_cloud.py) läser nycklar via
 # os.environ/python-dotenv, precis som lokalt - så vi bryggar över dem här,
-# INNAN något annat i appen importeras eller körs. Lokalt är st.secrets tom
-# (ingen .streamlit/secrets.toml, se .gitignore) och .env läses som vanligt.
-for _key, _value in st.secrets.items():
-    os.environ.setdefault(_key, str(_value))
+# INNAN något annat i appen importeras eller körs. Lokalt finns ingen
+# .streamlit/secrets.toml alls (se .gitignore), och st.secrets.items() kastar
+# StreamlitSecretNotFoundError i det läget snarare än att bara vara tom -
+# därför try/except istället för en tystare koll. .env läses som vanligt.
+try:
+    for _key, _value in st.secrets.items():
+        os.environ.setdefault(_key, str(_value))
+except StreamlitSecretNotFoundError:
+    pass
 
 import chromadb  # noqa: E402 - måste komma efter secrets-bryggan ovan
 
@@ -31,6 +37,9 @@ from src.llm import get_provider  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent
 _MAX_QUESTION_LENGTH = 300
+# Kostnadsskydd (Fas 7): varje fråga kostar ett DeepSeek-anrop. Sessionsbaserad
+# gräns istället för IP-baserad - se main() för motiveringen.
+_MAX_QUESTIONS_PER_SESSION = 10
 
 st.set_page_config(page_title="Årsredovisnings-RAG", page_icon="📊", layout="wide")
 
@@ -108,6 +117,18 @@ def _render_answer(question: str, searcher: HybridSearcher, provider) -> None:
 
 
 def main() -> None:
+    # Sessionsbaserad rate limiting, inte IP-baserad. Streamlit Cloud körs
+    # bakom en proxy och exponerar ingen tillförlitlig klient-IP i det
+    # publika API:t (headers kan förfalskas eller saknas, och delad IP bakom
+    # NAT/VPN skulle straffa oskyldiga besökare på samma nätverk). Målet här
+    # är att skydda mot okontrollerad DeepSeek-kostnad vid oavsiktliga loopar
+    # eller sladdrig användning av en portföljdemo - inte att stoppa en
+    # målmedveten aktör som öppnar nya sessioner, vilket varken IP- eller
+    # sessionsbaserad spärr klarar av utan betydligt mer infrastruktur
+    # (t.ex. en delad backend-databas för att räkna över sessioner). Se
+    # docs/DECISIONS_FAS7.md.
+    st.session_state.setdefault("questions_asked", 0)
+
     st.title("📊 Årsredovisnings-RAG")
     st.caption(
         "Ställ en fråga om Hexatronic, SkiStar eller Volvo. Svaren bygger "
@@ -162,9 +183,21 @@ def main() -> None:
         key="question_input",
         placeholder="T.ex. Vad var Volvos nettoomsättning 2024?",
     )
-    ask = st.button("Fråga", type="primary")
+    # Läses in EFTER att frågan (om någon) räknats, inte innan - annars visar
+    # texten antalet kvarvarande frågor från FÖRE den här körningen, eftersom
+    # Streamlit kör skriptet top-to-bottom i ett svep och ökningen av
+    # questions_asked sker längre ned. Knappens disabled-status ska däremot
+    # avgöras av läget INNAN klicket, så den delen läses av här.
+    remaining = _MAX_QUESTIONS_PER_SESSION - st.session_state.questions_asked
+    ask = st.button("Fråga", type="primary", disabled=remaining <= 0)
+    caption_placeholder = st.empty()
 
-    if ask:
+    if remaining <= 0:
+        st.warning(
+            f"Du har nått gränsen på {_MAX_QUESTIONS_PER_SESSION} frågor för den här "
+            "sessionen (kostnadsskydd för demot). Ladda om sidan för en ny session."
+        )
+    elif ask:
         stripped = question.strip()
         if not stripped:
             st.warning("Skriv en fråga innan du trycker på Fråga.")
@@ -174,8 +207,14 @@ def main() -> None:
                 f"{_MAX_QUESTION_LENGTH} tecken så blir svaret mer träffsäkert."
             )
         else:
+            st.session_state.questions_asked += 1
             searcher, provider = _load_pipeline()
             _render_answer(stripped, searcher, provider)
+
+    remaining_after = _MAX_QUESTIONS_PER_SESSION - st.session_state.questions_asked
+    caption_placeholder.caption(
+        f"{max(remaining_after, 0)} av {_MAX_QUESTIONS_PER_SESSION} frågor kvar i den här sessionen."
+    )
 
 
 if __name__ == "__main__":
