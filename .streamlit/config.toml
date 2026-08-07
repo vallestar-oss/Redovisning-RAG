@@ -1,0 +1,14 @@
+# Låst mörkt tema, medvetet val: appen ska se likadan ut för alla besökare
+# istället för att följa varje enskild dators ljus/mörkerinställning. Det gör
+# också att den egna CSS:en i app.py kan använda fasta färger som garanterat
+# har rätt kontrast, istället för att gissa vilket underlag den hamnar på.
+#
+# Accenten (teal) återkommer i primärknapp, exempelfråge-chips,
+# källhänvisningar och statusindikatorer - se _CSS i app.py.
+
+[theme]
+base = "dark"
+primaryColor = "#2DD4BF"
+backgroundColor = "#0E1117"
+secondaryBackgroundColor = "#171C26"
+textColor = "#E6EAF1"
