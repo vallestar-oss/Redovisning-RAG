@@ -35,6 +35,8 @@ import chromadb
 from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
 
+from .chunking import _display_company
+from .progress import ProgressCallback, emit
 from .search import SearchResult
 from .vectorstore import COLLECTION_NAME, EMBEDDING_MODEL, embed_query
 
@@ -241,6 +243,23 @@ def _rrf_fuse(ranked_lists: list[list[str]], k: int = _RRF_K) -> list[str]:
     return sorted(scores, key=lambda cid: (-scores[cid], cid))
 
 
+def _describe_sources(results: list[SearchResult]) -> str | None:
+    """Kort sammanfattning av var träffarna kommer ifrån, för statusraden i
+    UI:t: "volvo_2023.pdf s. 62, 63 · volvo_2024.pdf s. 37"."""
+    if not results:
+        return None
+    pages_by_doc: dict[str, list[int]] = {}
+    for r in results:
+        seen = pages_by_doc.setdefault(r.document, [])
+        for p in r.pages:
+            if p not in seen:
+                seen.append(p)
+    return " · ".join(
+        f"{doc} s. {', '.join(str(p) for p in sorted(pages))}"
+        for doc, pages in pages_by_doc.items()
+    )
+
+
 class HybridSearcher:
     """Laddar modell, Chroma-collection och BM25-index en gång."""
 
@@ -271,9 +290,12 @@ class HybridSearcher:
         for c in self._chunks.values():
             self._company_years.setdefault(c["company"], set()).add(c["fiscal_year"])
 
-    def _vector_ids(self, query: str, where: dict | None, depth: int) -> list[str]:
+    def _vector_ids(self, embedding: list[float], where: dict | None, depth: int) -> list[str]:
+        # Tar en färdig embedding, inte frågetexten: search() bäddar in en
+        # gång och återanvänder resultatet även i den ofiltrerade
+        # fallback-sökningen (som annars bäddade in exakt samma fråga igen).
         res = self._collection.query(
-            query_embeddings=[embed_query(self._model, query)],
+            query_embeddings=[embedding],
             n_results=depth,
             where=where,
             include=[],
@@ -331,7 +353,11 @@ class HybridSearcher:
         )
 
     def search(
-        self, query: str, top_k: int = 5, use_filters: bool = True
+        self,
+        query: str,
+        top_k: int = 5,
+        use_filters: bool = True,
+        on_progress: ProgressCallback | None = None,
     ) -> list[SearchResult]:
         filters = (
             parse_query_filters(query, self._company_years)
@@ -342,18 +368,50 @@ class HybridSearcher:
         where = filters.as_chroma_where()
         allowed = self._allowed_ids(filters)
 
+        if filters.company or filters.fiscal_years:
+            parts = []
+            if filters.company:
+                parts.append(_display_company(filters.company))
+            if filters.fiscal_years:
+                parts.append(", ".join(sorted(filters.fiscal_years)))
+            emit(on_progress, "filters", "Tolkade frågan", " · ".join(parts))
+        else:
+            emit(
+                on_progress,
+                "filters",
+                "Tolkade frågan",
+                "inget specifikt bolag/år - söker i allt underlag",
+            )
+
         # Expansionen görs EFTER filtertolkningen (som ska läsa frågan
         # skriven av användaren, inte de tillagda posttermerna) men
         # FÖRE själva sökningen, så både BM25 och embeddingen ser termerna.
         search_query = expand_query(query)
+        if search_query != query:
+            emit(
+                on_progress,
+                "expansion",
+                "Kompletterade sökningen med nyckeltalets underliggande poster",
+            )
 
-        vector_ids = self._vector_ids(search_query, where, _CANDIDATE_DEPTH)
+        emit(on_progress, "embedding", "Skapar embedding av frågan", EMBEDDING_MODEL)
+        embedding = embed_query(self._model, search_query)
+
+        emit(on_progress, "vector", "Söker i vektordatabasen")
+        vector_ids = self._vector_ids(embedding, where, _CANDIDATE_DEPTH)
+
+        emit(on_progress, "bm25", "Nyckelordssökning (BM25)")
         bm25_ids = self._bm25_ids(search_query, allowed, _CANDIDATE_DEPTH)
 
         # Ett feltolkat filter får inte tömma resultatet - falla tillbaka
         # på ofiltrerad sökning hellre än att svara "hittade inget".
         if len(vector_ids) + len(bm25_ids) < _MIN_FILTERED_HITS and where is not None:
-            vector_ids = self._vector_ids(search_query, None, _CANDIDATE_DEPTH)
+            emit(
+                on_progress,
+                "fallback",
+                "För få träffar med filtret - söker om utan det",
+            )
+            vector_ids = self._vector_ids(embedding, None, _CANDIDATE_DEPTH)
             bm25_ids = self._bm25_ids(search_query, None, _CANDIDATE_DEPTH)
 
         fused = _rrf_fuse([vector_ids, bm25_ids])
@@ -373,6 +431,13 @@ class HybridSearcher:
             results.append(self._to_result(cid))
             if len(results) >= top_k:
                 break
+
+        emit(
+            on_progress,
+            "results",
+            f"Hittade {len(results)} relevanta avsnitt",
+            _describe_sources(results),
+        )
         return results
 
 

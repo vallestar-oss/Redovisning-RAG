@@ -34,6 +34,7 @@ from src.chunking import _display_company  # noqa: E402
 from src.evaluation import EVAL_SET  # noqa: E402
 from src.hybrid_search import HybridSearcher  # noqa: E402
 from src.llm import get_provider  # noqa: E402
+from src.progress import ProgressEvent  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent
 _MAX_QUESTION_LENGTH = 300
@@ -84,24 +85,47 @@ def _format_source(source) -> str:
 
 
 def _render_answer(question: str, searcher: HybridSearcher, provider) -> None:
-    with st.spinner("Söker i årsredovisningarna och formulerar svar..."):
+    # Felet fångas inuti st.status-blocket men visas utanför det: en
+    # st.error inne i statusrutan hamnar i den hopfällda expandern och
+    # riskerar att inte synas alls.
+    error: str | None = None
+    answer = None
+
+    with st.status("Bearbetar frågan...", expanded=True) as status:
+
+        def on_progress(event: ProgressEvent) -> None:
+            line = f"**{event.message}**"
+            if event.detail:
+                line += f"  \n{event.detail}"
+            st.write(line)
+
         try:
-            answer = answer_question(question, searcher, provider)
+            answer = answer_question(
+                question, searcher, provider, on_progress=on_progress
+            )
         except APITimeoutError:
-            st.error(
+            error = (
                 "⏱️ DeepSeek svarade inte inom rimlig tid. Prova igen om en "
                 "liten stund - inget svar genererades."
             )
-            return
         except APIConnectionError:
-            st.error(
+            error = (
                 "🔌 Kunde inte nå DeepSeek. Kontrollera internetuppkopplingen "
                 "och att `DEEPSEEK_API_KEY` är giltig, och försök igen."
             )
-            return
         except Exception as exc:  # noqa: BLE001 - UI:t ska aldrig krascha på ett API-fel
-            st.error(f"❌ Något gick fel när svaret skulle genereras: {exc}")
-            return
+            error = f"❌ Något gick fel när svaret skulle genereras: {exc}"
+
+        if error:
+            status.update(label="Något gick fel", state="error", expanded=True)
+        else:
+            # Fälls ihop när allt gått bra - svaret ska ha fokus, men stegen
+            # finns kvar ett klick bort för den som vill se hur det gick till.
+            status.update(label="Klart", state="complete", expanded=False)
+
+    if error:
+        st.error(error)
+        return
 
     if answer.is_no_answer:
         st.warning(answer.text)

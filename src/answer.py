@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from .hybrid_search import HybridSearcher
 from .llm import LLMProvider
+from .progress import ProgressCallback, emit
 from .prompts import NO_ANSWER_PHRASE, build_prompt
 from .search import SearchResult
 
@@ -27,10 +28,15 @@ def answer_question(
     # samma kontext - vid top_k=5 saknades en av dem, vid 8 fanns båda.
     # Se docs/DECISIONS_FAS4.md.
     top_k: int = 8,
+    # Valfri statusrapportering (src/progress.py). None = tyst, vilket är vad
+    # tester, CLI och src/evaluation.py använder.
+    on_progress: ProgressCallback | None = None,
 ) -> Answer:
-    results = searcher.search(question, top_k=top_k)
+    results = searcher.search(question, top_k=top_k, on_progress=on_progress)
     prompt = build_prompt(question, results)
+    emit(on_progress, "llm", "Skickar underlaget till DeepSeek")
     text = provider.complete(prompt.system, prompt.user)
+    emit(on_progress, "done", "Svar genererat")
     return Answer(
         question=question,
         text=text,
