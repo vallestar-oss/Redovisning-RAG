@@ -28,6 +28,7 @@ med godtyckliga vikter.
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -236,11 +237,26 @@ def _rrf_fuse(ranked_lists: list[list[str]], k: int = _RRF_K) -> list[str]:
     fråga kunde ge olika resultatordning mellan körningar - oacceptabelt
     för en sökfunktion som ska gå att felsöka och testa.
     """
+    return sorted(
+        (scores := _rrf_scores(ranked_lists, k)),
+        key=lambda cid: (-scores[cid], cid),
+    )
+
+
+def _rrf_scores(ranked_lists: list[list[str]], k: int = _RRF_K) -> dict[str, float]:
+    """RRF-poängen bakom fusionen, separat från sorteringen.
+
+    Bruten ur `_rrf_fuse` för att UI:t ska kunna visa vad fusionen faktiskt
+    räknade ut - poängen är annars den mest intressanta siffran i hela
+    retrievalsteget och kastades tidigare bort direkt efter sorteringen.
+    `_rrf_fuse` behåller sin signatur (lista av id) eftersom testerna
+    bygger på den.
+    """
     scores: dict[str, float] = {}
     for ranked in ranked_lists:
         for rank, chunk_id in enumerate(ranked, start=1):
             scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (k + rank)
-    return sorted(scores, key=lambda cid: (-scores[cid], cid))
+    return scores
 
 
 def _describe_sources(results: list[SearchResult]) -> str | None:
@@ -394,14 +410,23 @@ class HybridSearcher:
                 "Kompletterade sökningen med nyckeltalets underliggande poster",
             )
 
-        emit(on_progress, "embedding", "Skapar embedding av frågan", EMBEDDING_MODEL)
+        started = time.perf_counter()
         embedding = embed_query(self._model, search_query)
+        emit(
+            on_progress,
+            "embedding",
+            "Skapade embedding av frågan",
+            f"{EMBEDDING_MODEL} · {len(embedding)} dimensioner",
+            {"elapsed_ms": (time.perf_counter() - started) * 1000},
+        )
 
-        emit(on_progress, "vector", "Söker i vektordatabasen")
+        started = time.perf_counter()
         vector_ids = self._vector_ids(embedding, where, _CANDIDATE_DEPTH)
+        vector_ms = (time.perf_counter() - started) * 1000
 
-        emit(on_progress, "bm25", "Nyckelordssökning (BM25)")
+        started = time.perf_counter()
         bm25_ids = self._bm25_ids(search_query, allowed, _CANDIDATE_DEPTH)
+        bm25_ms = (time.perf_counter() - started) * 1000
 
         # Ett feltolkat filter får inte tömma resultatet - falla tillbaka
         # på ofiltrerad sökning hellre än att svara "hittade inget".
@@ -414,6 +439,26 @@ class HybridSearcher:
             vector_ids = self._vector_ids(embedding, None, _CANDIDATE_DEPTH)
             bm25_ids = self._bm25_ids(search_query, None, _CANDIDATE_DEPTH)
 
+        emit(
+            on_progress,
+            "vector",
+            "Vektorsökning",
+            f"{len(vector_ids)} kandidater",
+            {"elapsed_ms": vector_ms, "count": len(vector_ids)},
+        )
+        emit(
+            on_progress,
+            "bm25",
+            "Nyckelordssökning (BM25)",
+            f"{len(bm25_ids)} kandidater",
+            {"elapsed_ms": bm25_ms, "count": len(bm25_ids)},
+        )
+
+        # Rankpositionerna sparas: de är underlaget för att visa HUR de två
+        # sökmetoderna är oense, vilket är hela poängen med hybridsökningen.
+        vector_rank = {cid: i for i, cid in enumerate(vector_ids, start=1)}
+        bm25_rank = {cid: i for i, cid in enumerate(bm25_ids, start=1)}
+        rrf_scores = _rrf_scores([vector_ids, bm25_ids])
         fused = _rrf_fuse([vector_ids, bm25_ids])
 
         # Bas-id-avdubbling: en delad chunk (se _to_result) kan dyka upp två
@@ -423,20 +468,43 @@ class HybridSearcher:
         # utan avdubbling skulle en post i top_k slösas på en dublett.
         results: list[SearchResult] = []
         seen_base_ids: set[str] = set()
+        ranking: list[dict] = []
         for cid in fused:
             base_id = cid if cid in self._chunks else re.sub(r"::del\d+$", "", cid)
             if base_id not in self._chunks or base_id in seen_base_ids:
                 continue
             seen_base_ids.add(base_id)
-            results.append(self._to_result(cid))
+            result = self._to_result(cid)
+            results.append(result)
+            ranking.append(
+                {
+                    "fused_rank": len(results),
+                    "document": result.document,
+                    "pages": list(result.pages),
+                    "section": result.section,
+                    "chunk_type": result.chunk_type,
+                    # None = metoden hittade aldrig chunken inom sitt
+                    # kandidatdjup. Det är själva poängen med tabellen:
+                    # en rad som bara den ena metoden hittade.
+                    "vector_rank": vector_rank.get(cid),
+                    "bm25_rank": bm25_rank.get(cid),
+                    "rrf_score": rrf_scores.get(cid, 0.0),
+                }
+            )
             if len(results) >= top_k:
                 break
 
         emit(
             on_progress,
             "results",
-            f"Hittade {len(results)} relevanta avsnitt",
+            f"Sammanvägde med RRF (k={_RRF_K}) → {len(results)} avsnitt",
             _describe_sources(results),
+            {
+                "ranking": ranking,
+                "rrf_k": _RRF_K,
+                "candidate_depth": _CANDIDATE_DEPTH,
+                "corpus_size": len(self._ids),
+            },
         )
         return results
 

@@ -2,6 +2,7 @@
 till en fråga-in, svar-med-källa-ut-funktion.
 """
 
+import time
 from dataclasses import dataclass
 
 from .hybrid_search import HybridSearcher
@@ -34,9 +35,28 @@ def answer_question(
 ) -> Answer:
     results = searcher.search(question, top_k=top_k, on_progress=on_progress)
     prompt = build_prompt(question, results)
-    emit(on_progress, "llm", "Skickar underlaget till DeepSeek")
+
+    # Promptstorleken är värd att visa: den förklarar både kostnaden och
+    # varför LLM-steget dominerar tidsåtgången.
+    prompt_chars = len(prompt.system) + len(prompt.user)
+    emit(
+        on_progress,
+        "llm",
+        "Skickar underlaget till DeepSeek",
+        f"{prompt_chars:,} tecken kontext".replace(",", " "),
+        {"prompt_chars": prompt_chars},
+    )
+
+    started = time.perf_counter()
     text = provider.complete(prompt.system, prompt.user)
-    emit(on_progress, "done", "Svar genererat")
+    llm_ms = (time.perf_counter() - started) * 1000
+    emit(
+        on_progress,
+        "done",
+        "Svar genererat",
+        f"{len(text)} tecken",
+        {"elapsed_ms": llm_ms},
+    )
     return Answer(
         question=question,
         text=text,

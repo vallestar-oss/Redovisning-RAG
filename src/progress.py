@@ -19,13 +19,25 @@ class ProgressEvent:
     """Ett rapporterat pipelinesteg.
 
     `step` är en stabil, maskinläsbar nyckel (för tester och ev. ikonval i
-    UI:t), `message` är texten som visas för användaren, och `detail` är en
-    valfri precisering - typiskt vad steget faktiskt hittade.
+    UI:t), `message` är texten som visas för användaren, `detail` är en
+    valfri precisering i klartext, och `data` bär strukturerad nyttolast för
+    steg som har mer att visa än en rad text - t.ex. rankningstabellen från
+    hybridsökningen, där UI:t vill rendera siffrorna själv.
+
+    `data` hålls som en vanlig dict med JSON-vänliga värden: kärnkoden ska
+    inte behöva veta hur UI:t tänker presentera den.
     """
 
     step: str
     message: str
     detail: str | None = None
+    data: dict | None = None
+
+    def elapsed_ms(self) -> float | None:
+        """Bekvämlighet för UI:t: tiden steget tog, om den mättes."""
+        if self.data is None:
+            return None
+        return self.data.get("elapsed_ms")
 
 
 ProgressCallback = Callable[[ProgressEvent], None]
@@ -36,8 +48,11 @@ def emit(
     step: str,
     message: str,
     detail: str | None = None,
+    data: dict | None = None,
 ) -> None:
     """Rapporterar ett steg om någon lyssnar. No-op när on_progress är None,
     så anropande kod slipper `if on_progress is not None`-brus på varje rad."""
     if on_progress is not None:
-        on_progress(ProgressEvent(step=step, message=message, detail=detail))
+        on_progress(
+            ProgressEvent(step=step, message=message, detail=detail, data=data)
+        )

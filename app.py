@@ -142,6 +142,48 @@ button[data-testid="stBaseButton-primary"]:hover {{
     border-radius: 4px 10px 10px 4px !important;
 }}
 
+/* --- Retrieval-tabell (terminal-/datastil, inte mjuk "app"-stil) -------- */
+.retrieval-wrap {{ overflow-x: auto; margin: 0.2rem 0 0.6rem; }}
+table.retrieval {{
+    width: 100%; border-collapse: collapse;
+    font-size: 0.78rem; font-variant-numeric: tabular-nums;
+}}
+table.retrieval th {{
+    text-align: left; padding: 0.3rem 0.55rem;
+    font-size: 0.64rem; font-weight: 700; letter-spacing: 0.07em;
+    text-transform: uppercase; opacity: 0.5;
+    border-bottom: 1px solid rgba(230, 234, 241, 0.18);
+    white-space: nowrap;
+}}
+table.retrieval td {{
+    padding: 0.32rem 0.55rem;
+    border-bottom: 1px solid rgba(230, 234, 241, 0.06);
+    white-space: nowrap;
+}}
+table.retrieval tr:hover td {{ background: rgba(230, 234, 241, 0.035); }}
+.mono {{
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+                 "Liberation Mono", monospace;
+    text-align: right;
+}}
+.rank-weak {{ opacity: 0.4; }}
+.rank-none {{ opacity: 0.28; }}
+.score-cell {{ display: flex; align-items: center; gap: 0.45rem; min-width: 118px; }}
+.score-bar {{
+    height: 4px; background: {_ACCENT}; opacity: 0.55; border-radius: 1px;
+    flex: 0 0 auto; min-width: 2px;
+}}
+.lift {{
+    font-size: 0.66rem; letter-spacing: 0.03em;
+    color: {_ACCENT}; opacity: 0.9; white-space: nowrap;
+}}
+.src-doc {{ opacity: 0.9; }}
+.src-sec {{ opacity: 0.5; font-style: italic; }}
+.pipeline-meta {{
+    font-size: 0.7rem; opacity: 0.5; margin-top: 0.15rem;
+    font-variant-numeric: tabular-nums;
+}}
+
 /* --- Statusrutan -------------------------------------------------------- */
 [data-testid="stExpanderDetails"] {{ animation: fade-in 0.25s ease; }}
 @keyframes fade-in {{
@@ -190,6 +232,81 @@ def _load_document_overview() -> list[dict]:
     return overview
 
 
+def _rank_cell(rank: int | None) -> str:
+    """Rankposition från en av de två sökmetoderna.
+
+    None betyder att metoden aldrig hittade avsnittet inom sitt
+    kandidatdjup - det görs visuellt tydligt, för det är just de fallen som
+    visar varför båda metoderna behövs.
+    """
+    if rank is None:
+        return '<td class="mono rank-none">—</td>'
+    cls = "mono" if rank <= 10 else "mono rank-weak"
+    return f'<td class="{cls}">{rank}</td>'
+
+
+def _lift_label(row: dict) -> str:
+    """Markerar avsnitt som en av metoderna räddade åt den andra."""
+    v, b = row["vector_rank"], row["bm25_rank"]
+    weak = 10
+    if (v is None or v > weak) and b is not None and b <= weak:
+        return '<span class="lift">↑ BM25</span>'
+    if (b is None or b > weak) and v is not None and v <= weak:
+        return '<span class="lift">↑ vektor</span>'
+    return ""
+
+
+def _render_retrieval_table(data: dict) -> None:
+    """Rankningstabellen: hur vektorsökning och BM25 rankade varje avsnitt,
+    och vad RRF-fusionen gjorde av det. Byggd på siffror pipelinen redan
+    räknar ut (src/hybrid_search.py) - poängen är att visa att
+    hybridsökningen gör verklig skillnad, inte bara påstå det."""
+    ranking = data.get("ranking") or []
+    if not ranking:
+        return
+
+    top_score = max((r["rrf_score"] for r in ranking), default=0.0) or 1.0
+    rows = []
+    for r in ranking:
+        width = max(2, round(r["rrf_score"] / top_score * 100))
+        pages = ", ".join(str(p) for p in r["pages"])
+        section = (
+            f' <span class="src-sec">{html.escape(r["section"])}</span>'
+            if r["section"]
+            else ""
+        )
+        rows.append(
+            "<tr>"
+            f'<td class="mono">{r["fused_rank"]}</td>'
+            f"{_rank_cell(r['vector_rank'])}"
+            f"{_rank_cell(r['bm25_rank'])}"
+            '<td><div class="score-cell">'
+            f'<span class="score-bar" style="width:{width}px"></span>'
+            f'<span class="mono">{r["rrf_score"]:.4f}</span>'
+            "</div></td>"
+            f'<td><span class="src-doc">{html.escape(r["document"])}</span> '
+            f"s. {html.escape(pages)}{section}</td>"
+            f"<td>{_lift_label(r)}</td>"
+            "</tr>"
+        )
+
+    st.markdown(
+        '<div class="retrieval-wrap"><table class="retrieval">'
+        "<thead><tr>"
+        "<th>Slutlig</th><th>Vektor</th><th>BM25</th><th>RRF-poäng</th>"
+        "<th>Källa</th><th></th>"
+        "</tr></thead><tbody>" + "".join(rows) + "</tbody></table></div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f'<div class="pipeline-meta">Två oberoende sökningar över '
+        f'{data.get("corpus_size", 0):,} chunkar, {data.get("candidate_depth", 0)} '
+        f'kandidater var, sammanvägda med Reciprocal Rank Fusion (k={data.get("rrf_k")}). '
+        "&nbsp;·&nbsp; — = utanför metodens kandidatdjup.</div>".replace(",", " "),
+        unsafe_allow_html=True,
+    )
+
+
 def _source_chip(source) -> str:
     """Källhänvisning som HTML-chip.
 
@@ -218,14 +335,18 @@ def _render_answer(question: str, searcher: HybridSearcher, provider) -> None:
     # riskerar att inte synas alls.
     error: str | None = None
     answer = None
+    events: list[ProgressEvent] = []
 
     with st.status("Bearbetar frågan...", expanded=True) as status:
 
         def on_progress(event: ProgressEvent) -> None:
-            line = f"**{event.message}**"
+            events.append(event)
+            ms = event.elapsed_ms()
+            timing = f'  <span class="pipeline-meta">{ms:.0f} ms</span>' if ms else ""
+            line = f"**{event.message}**{timing}"
             if event.detail:
                 line += f"  \n{event.detail}"
-            st.write(line)
+            st.markdown(line, unsafe_allow_html=True)
 
         try:
             answer = answer_question(
@@ -273,6 +394,28 @@ def _render_answer(question: str, searcher: HybridSearcher, provider) -> None:
         st.markdown(f'<div class="source-chips">{chips}</div>', unsafe_allow_html=True)
     elif not answer.is_no_answer:
         st.caption("Inga källor hittades för det här svaret.")
+
+    # Rankningstabellen: den enda platsen där det syns att retrieval faktiskt
+    # är hybrid. Expanderad som standard - den är själva poängen med demot.
+    retrieval = next((e.data for e in events if e.step == "results" and e.data), None)
+    if retrieval:
+        lifts = sum(1 for r in retrieval.get("ranking", []) if _lift_label(r))
+        label = "Hybridsökning: så rankades avsnitten"
+        if lifts:
+            label += f"  ({lifts} avsnitt som bara en av metoderna hittade)"
+        total_ms = sum(e.elapsed_ms() or 0 for e in events)
+        with st.expander(label, expanded=True):
+            _render_retrieval_table(retrieval)
+            st.markdown(
+                f'<div class="pipeline-meta">Total tid {total_ms / 1000:.1f} s '
+                + " · ".join(
+                    f"{e.message.lower()} {e.elapsed_ms():.0f} ms"
+                    for e in events
+                    if e.elapsed_ms()
+                )
+                + "</div>",
+                unsafe_allow_html=True,
+            )
 
 
 def main() -> None:
