@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from src.hybrid_search import HybridSearcher, _rrf_fuse, parse_query_filters
+from src.hybrid_search import HybridSearcher, _rrf_fuse, expand_query, parse_query_filters
 
 ROOT = Path(__file__).resolve().parent.parent
 CHUNKS_DIR = ROOT / "data" / "chunks"
@@ -100,6 +100,35 @@ def test_filters_build_valid_chroma_where():
     assert multi_year.as_chroma_where() == {
         "$and": [{"company": "volvo"}, {"fiscal_year": {"$in": ["2023", "2024"]}}]
     }
+
+
+def test_expand_query_uses_company_specific_net_result_term():
+    """Bolagsspecifik terminologi (fixar N5, docs/evaluation.md): Volvo
+    kallar sin nettoresultat-rad "Periodens resultat", ALDRIG "Årets
+    resultat" som Hexatronic och SkiStar gör - bekräftat mot samtliga tre
+    bolags faktiska fakta-chunkar i data/chunks/. En gemensam synonymlista
+    med båda varianterna för alla bolag mättes (fristående BM25-körning,
+    utan HybridSearcher) FÖRSÄMRA ett redan fungerande fall (Hexatronics
+    vinstmarginal) genom att "resultat" är så vanligt att det späder ut
+    BM25-poängen brett - se motivering i src/hybrid_search.py. Expansionen
+    ska därför vara bolagsmedveten: bara det aktuella bolagets EGEN term."""
+    volvo_query = expand_query("Vad var Volvos vinstmarginal 2023?", "volvo")
+    assert "periodens resultat" in volvo_query.lower()
+    assert "årets resultat" not in volvo_query.lower()
+
+    hexatronic_query = expand_query("Vad var Hexatronics vinstmarginal 2024?", "hexatronic")
+    assert "årets resultat" in hexatronic_query.lower()
+    assert "periodens resultat" not in hexatronic_query.lower()
+
+    skistar_query = expand_query("Vad var SkiStars vinstmarginal 2023/24?", "skistar")
+    assert "årets resultat" in skistar_query.lower()
+    assert "periodens resultat" not in skistar_query.lower()
+
+    # Okänt/oidentifierat bolag - hellre en bred gissning med båda kända
+    # varianterna än ingen expansion alls.
+    unknown_query = expand_query("Vad var vinstmarginalen 2023?", None)
+    assert "årets resultat" in unknown_query.lower()
+    assert "periodens resultat" in unknown_query.lower()
 
 
 def test_rrf_prefers_consensus_over_single_list():
