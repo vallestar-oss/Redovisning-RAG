@@ -46,6 +46,13 @@ GROUND_TRUTH = [
      {"hexatronic_2025.pdf::resultaträkning::rad10"}),
     ("Vad var SkiStars kassaflöde från den löpande verksamheten 2024/25?",
      {"skistar_2024-25.pdf::kassaflödesanalys::rad7"}),
+    # Fixar Y3 (docs/evaluation.md): "Årets resultat" och "Årets
+    # totalresultat" står på samma sida och är lexikalt/semantiskt extremt
+    # lika - se _fact_chunk_text i src/chunking.py för åtgärden. Bara
+    # "Årets resultat"-raden (inte "Årets totalresultat") accepteras här.
+    ("Hur har SkiStars årets resultat utvecklats från 2023/24 till 2024/25?",
+     {"skistar_2024-25.pdf::resultaträkning::rad17",
+      "skistar_2024-25.pdf::resultaträkning::rad25"}),
 ]
 
 

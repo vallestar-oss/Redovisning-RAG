@@ -161,6 +161,41 @@ def _render_table_chunk(statement_type: str, company: str, fiscal_year: str, row
     return " ".join([intro] + sentences)
 
 
+def _fact_chunk_text(company: str, statement_type: str, fiscal_year: str, row: dict) -> str:
+    """Fakta-chunkens text: radetiketten upprepad ORDAGRANT som en egen,
+    isolerad ledfras FÖRE den naturligt formulerade meningen.
+
+    Fixar Y3 (docs/evaluation.md): "Årets resultat" och "Årets
+    totalresultat" (SkiStar, samma sida) förväxlades på samma sätt som
+    "nettoomsättning"/"nettoinvesteringar" i Fas 3 - men ligger ännu
+    närmare varandra i BM25- och embeddingrymden, eftersom den ena
+    etiketten bokstavligen är den andra plus ett förled. Etiketten var
+    redan med ordagrant i meningen (_row_sentence skriver ut row['label']
+    oförändrat) - det var alltså inte en trunkerings-/normaliseringsbugg.
+    Uppmätt (fristående BM25-experiment mot hela korpusen): den korrekta
+    raden låg på rank 25, mot rank 194 för den lexikalt snarlika
+    "totalresultat"-raden - rätt riktning, men BM25 ensam vinner inte
+    RRF-fusionen mot en självsäker (om än fel) vektorträff när dess egen
+    rank ligger så långt ifrån toppen, samma fusionsmekanism som redan
+    identifierats i docs/DECISIONS_FAS3.md.
+
+    Att upprepa den exakta etiketten som en egen fras höjer dess
+    termfrekvens för BM25 utan att ge konkurrenten ("totalresultat" är en
+    annan token) någon motsvarande fördel. Uppmätt effekt: BM25-rank
+    25 -> 17 för den korrekta raden (nästan dubblad marginal till
+    konkurrenten), med oförändrad eller förbättrad rank för alla övriga
+    facit-frågor i tests/test_hybrid_search.py utom en (Hexatronics
+    nettoomsättning 2023: rank 1 -> 2, fortfarande långt innanför
+    top_k=5).
+
+    Bara fakta-chunken (en rad, en gång) får ledfrasen - inte
+    helhetstabellchunken (_render_table_chunk). Där skulle samma
+    upprepning för VARJE rad bara göra en redan lång chunk längre utan
+    motsvarande nytta: helhetschunken konkurrerar inte rad-mot-rad om
+    retrieval-platser på det sätt fakta-chunkarna gör."""
+    return f"{row['label']}. {_row_sentence(company, statement_type, fiscal_year, row)}"
+
+
 def chunk_document(doc: dict) -> list[Chunk]:
     chunks: list[Chunk] = []
     pages_by_number = {p["page"]: p for p in doc["pages"]}
@@ -216,7 +251,7 @@ def chunk_document(doc: dict) -> list[Chunk]:
                     section=statement_type,
                     # Radens EGEN sida - inte hela räkningens sidlista.
                     pages=[page_number],
-                    text=_row_sentence(doc["company"], statement_type, doc["fiscal_year"], row),
+                    text=_fact_chunk_text(doc["company"], statement_type, doc["fiscal_year"], row),
                 )
             )
 
