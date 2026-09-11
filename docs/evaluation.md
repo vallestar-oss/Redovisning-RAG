@@ -169,3 +169,241 @@ baseline, se steg 5 i Fas 5-prompten):
    som om det vore koncernen.
 3. Högre `top_k` eller `_CANDIDATE_DEPTH` specifikt för flerårsfrågor,
    där två periodens chunkar konkurrerar om samma platser.
+
+---
+
+# Omkörning — 2026-09-11
+
+**Gren:** `claude/festive-tesla-teyts0`
+**Facit:** samma `EVAL_SET` (18 frågor) som baseline ovan - oförändrat i
+`src/evaluation.py`, alltså samma facit-siffror och samma källhänvisningar.
+**Metod:** identisk med baseline - `python -m src.evaluation` kördes exakt en
+gång (`temperature=0`), resultatet loggades till `data/evaluation_run.json`
+och bedömdes manuellt mot samma facit (RÄTT/DELVIS/FEL). För de fyra
+avvikande fallen i baseline (Y2, Y3, N3, N5) verifierades dessutom det
+faktiska retrieval-underlaget genom att anropa `HybridSearcher.search()`
+direkt med exakt samma frågetext, för att se vilka chunkar modellen faktiskt
+fick i sin kontext - inte bara gissa utifrån svarstexten.
+
+**Vad som ändrats i koden sedan baseline:** `src/hybrid_search.py` innehåller
+nu en bolagsmedveten `_COMPANY_NET_RESULT_TERMS`-mappning
+(`volvo: "periodens resultat"`, `hexatronic`/`skistar: "årets resultat"`) som
+löser upp en platshållare i `_RATIO_TERM_EXPANSIONS` per bolag - exakt
+åtgärd #1 från baseline-förslagen ovan, redan implementerad.
+
+## Sammanfattning
+
+**15 av 18 rätt (83 %),** upp från 14/18 (78 %) i baseline - men
+sammansättningen har ändrats mer än totalsumman antyder: två tidigare
+avvikande fall är fixade (Y3, N3), ett tidigare korrekt fall har brutits
+(N4), och det fjärde (N5) är fortfarande fel men av en **annan, ny orsak**.
+
+| Frågetyp | Rätt | Delvis | Fel | Andel rätt | Baseline |
+|---|---|---|---|---|---|
+| Enårsuppslag | 6 | 0 | 0 | 100 % | 100 % (oförändrat) |
+| Flerårstrend/YoY | 4 | 1 | 0 | 80 % | 60 % |
+| Nyckeltalsberäkning | 3 | 0 | 2 | 60 % | 60 % (oförändrad andel, men N3 fixad / N4 ny regression) |
+| Kvalitativ | 2 | 0 | 0 | 100 % | 100 % (oförändrat) |
+| **Totalt** | **15** | **1** | **2** | **83 %** | **78 %** |
+
+## Detaljerat resultat
+
+| ID | Typ | Bedömning | Baseline | Ändring |
+|---|---|---|---|---|
+| E1–E6 | Enårsuppslag | RÄTT (alla 6) | RÄTT | oförändrat |
+| Y1 | YoY | RÄTT | RÄTT | oförändrat |
+| Y2 | YoY | **DELVIS** | FEL | **förbättrat** |
+| Y3 | YoY | **RÄTT** | DELVIS | **fixat** |
+| Y4 | YoY | RÄTT | RÄTT | oförändrat |
+| Y5 | YoY | RÄTT | RÄTT | oförändrat |
+| N1 | Nyckeltal | RÄTT | RÄTT | oförändrat |
+| N2 | Nyckeltal | RÄTT | RÄTT | oförändrat |
+| N3 | Nyckeltal | **RÄTT** | DELVIS | **fixat och verifierat** |
+| N4 | Nyckeltal | **FEL** | RÄTT | **ny regression** |
+| N5 | Nyckeltal | FEL | FEL | oförändrad bedömning, **men ny grundorsak** |
+| K1, K2 | Kvalitativ | RÄTT (båda) | RÄTT | oförändrat |
+
+## De fyra jämförda fallen - vad som faktiskt hände
+
+### Y2 (FEL → DELVIS) — Volvos rörelseresultat 2023→2024
+
+**Nytt svar:** "Rörelseresultatet för Volvokoncernen uppgick till 66,6 (2024)
+jämfört med 66,8 (2023), enligt kassaflödesanalysen (volvo_2024.pdf, s. 213)."
+- Detta **matchar facit** (66.611 / 66.784 Mkr, avrundat till Mdr med en
+  decimal - `volvo_2024.pdf::kassaflödesanalys::rad38`, en tioårig
+  sammandragsrad, verifierad manuellt: "Rörelseresultat var 66,6 (2024),
+  66,8 (2023)..."). Till skillnad från baseline citerar svaret nu korrekt
+  Volvokoncernen-nivån, inte ett segment som om det vore koncernen -
+  promptregel 7-brottet från baseline är borta.
+
+**Men** svaret fortsätter: "Observera att olika källutdrag anger olika
+rörelseresultat för samma år" och listar sedan Industriverksamheten
+(62.198/63.063) och "Lastbilsverksamheten rapporterat rörelseresultat"
+(45.966/48.893) som om de vore konkurrerande tolkningar, och avslutar med
+"Vilket mått som avses framgår inte av frågan." Det är fel: frågan gäller
+uttryckligen "Volvos rörelseresultat" (dvs. koncernen), vilket svaret redan
+korrekt hade identifierat i första meningen. Att därefter så tvivel om ett
+redan korrekt besvarat mått är en **självunderminerande efterhängsel** -
+inte en felaktig siffra, men en presentation som riskerar att få en
+läsare att inte lita på den rätta siffran den precis fått.
+
+**Bedömning: DELVIS**, inte RÄTT - kärnsvaret är korrekt och rätt
+attribuerat, men den onödiga tvekan om vilket mått som avses (trots att
+frågan är entydig) är en kvalitetsbrist värd att åtgärda.
+
+### Y3 (DELVIS → RÄTT) — SkiStars årets resultat 2023/24→2024/25
+
+**Nytt svar:** "Årets resultat uppgick till 552 019 (2025-08-31) i 2024/25,
+jämfört med 472 887 (2024-08-31) i 2023/24 – en ökning (skistar_2024-25.pdf,
+s. 119)."
+
+Matchar facit exakt på båda årens siffror, korrekt post ("Årets resultat",
+inte "Årets totalresultat" som i baseline), korrekt riktning och korrekt
+sida. Baseline-problemet (retrieval hämtade fel men snarlik radetikett för
+2024/25) är löst - antingen genom förbättrad retrieval eller för att
+frågeformuleringen denna gång lyfte fram rätt term. **Bedömning: RÄTT**,
+en ren förbättring.
+
+### N3 (DELVIS → RÄTT, verifierad) — SkiStars soliditet 2023/24
+
+**Nytt svar:** "SkiStars soliditet 2023/24 var 42 % inklusive IFRS 16 och
+56 % exklusive IFRS 16 (skistar_2023-24.pdf, s. 144)."
+
+Baseline lämnade det här öppet ("kan inte utan vidare granskning avgöra om
+s. 144 verkligen innehåller '42 %' som SkiStars egen redovisade siffra").
+Jag har nu läst chunken för s. 144 direkt (`data/chunks/skistar_2023-24.json`,
+chunk `skistar_2023-24.pdf::p144::1`) och den innehåller ordagrant SkiStars
+egen tabell "Avstämning av alternativa nyckeltal":
+
+```
+Soliditet inklusive IFRS 16
+Eget kapital 3 656 803    Balansomslutning 8 681 892    Soliditet, % 42
+Soliditet exklusive IFRS 16
+Eget kapital 3 727 113    Balansomslutning 6 651 080    Soliditet, % 56
+```
+
+Eget kapital (3 656 803) och Balansomslutning (8 681 892) är exakt samma
+tal facit räknade fram sin 42,1 % ur - s. 144 är alltså bolagets EGEN
+avrundade version (42 %) av precis samma kvot, inte en förväxlad sida. Enligt
+promptens princip att föredra bolagets egen redovisade siffra framför en
+egen beräkning är s. 144 dessutom ett **bättre** källval än facits s. 105.
+"Exklusive IFRS 16"-tillägget (56 %) är korrekt återgivet bonusinformation
+från samma tabell, inte en felaktig siffra. **Bedömning: RÄTT**, och
+baseline-osäkerheten är nu upplöst i systemets favör.
+
+### N5 (FEL → FEL, men NY grundorsak) — Volvos vinstmarginal 2023
+
+**Nytt svar:** "Jag hittar inte svaret i underlaget. Vinstmarginal
+(periodens resultat dividerat med nettoomsättning) redovisas inte som
+nyckeltal i utdragen, och någon definition eller färdigberäknad siffra för
+vinstmarginal finns inte med."
+
+Baseline-buggen (query-expansionen letade efter "årets resultat" istället
+för Volvos "Periodens resultat") är **fixad** - koden har nu
+`_COMPANY_NET_RESULT_TERMS = {"volvo": ["periodens resultat"], ...}`
+(`src/hybrid_search.py:134`). Jag körde om exakt samma fråga direkt mot
+`HybridSearcher.search()` för att se vad fixen faktiskt hämtar:
+
+```
+volvo_2023.pdf::resultaträkning::rad20 | [59]  | fact  (Periodens resultat: 49.932 / 32.969)
+volvo_2023.pdf::resultaträkning::rad25 | [59]  | fact  (Periodens övriga totalresultat - fel rad)
+volvo_2023.pdf::resultaträkning::rad15 | [59]  | fact  (Periodens resultat, segmentsnedbrytning: 49.932 Volvokoncernen)
+volvo_2023.pdf::p220::0                | [220] | text
+volvo_2023.pdf::resultaträkning::rad44 | [223] | fact  (Periodens resultat, 11-årshistorik: 49.932...)
+volvo_2023.pdf::p221::0                | [221] | text
+volvo_2023.pdf::p220::1                | [220] | text
+volvo_2023.pdf::p157::0                | [157] | text
+```
+
+Täljaren (49.932, "Periodens resultat", Volvokoncernen 2023) finns nu med
+**tre gånger** - i tre nästan identiska varianter av samma rad
+(segmentnedbrytning, kortversion, 11-årshistorik). Men **ingen enda chunk
+med Nettoomsättning (552.764) kom med i top-8**, trots att "nettoomsättning"
+uttryckligen är en av expansionstermerna. De tre näst-intill-dubblettraderna
+för täljaren konkurrerade ut nämnaren ur kandidatdjupet. Modellens svar är
+alltså **ärligt givet sin faktiska kontext** - den hade verkligen inte
+nettoomsättningen framför sig - men resultatet är samma FEL-betyg som
+baseline, av en helt annan orsak:
+
+- **Baseline:** fel term i expansionen → hittade fel nyckeltal, svarade
+  självsäkert men fel (rörelsemarginal istället för vinstmarginal).
+- **Nu:** träffsäker term i expansionen → hittade rätt post tre gånger, men
+  trängde ut den andra posten den behövde. Ärlig "hittar inte", men
+  fortfarande obesvarad trots att svaret gick att räkna fram ur data som
+  faktiskt finns i indexet.
+
+**Bedömning: FEL** (ingen användbar siffra levererades), men detta är en
+**ny bugg**, inte en kvarleva av den gamla. Åtgärdsförslag #1 från baseline
+(bolagsmedveten terminologi) är alltså genomförd och gör sitt jobb för
+täljaren - men avslöjar ett närliggande problem: dedupliceringen/rankningen
+hanterar inte flera snarlika rader om SAMMA post bra, på bekostnad av den
+andra postens utrymme i top-k.
+
+## Ny observation utanför de fyra jämförda fallen: N4 har brutits (RÄTT → FEL)
+
+Inte efterfrågad i uppdraget, men för viktig för att utelämna: **N4
+(Hexatronics vinstmarginal 2024) var RÄTT i baseline och är FEL nu.**
+
+**Nytt svar:** "Vinstmarginal definieras inte i underlaget, och någon post
+med den benämningen finns inte. Däremot redovisas EBITA-marginalen för
+2024: 10,6 procent."
+
+Jag körde samma verifiering som för N5: `HybridSearcher.search()` med exakt
+frågetexten. Båda ingredienserna finns i topp-8 och är entydigt märkta:
+
+```
+hexatronic_2024.pdf::resultaträkning::rad0  | [100] | Nettoomsättning: 7 581 (2024)
+hexatronic_2024.pdf::resultaträkning::rad16 | [100] | Årets resultat: 344 (2024)
+hexatronic_2024.pdf::resultaträkning::rad19 | [100] | Årets resultat: 344 (2024) (dublett)
+```
+
+344 / 7 581 = 4,5 %, exakt facit. Detta är alltså **ingen retrieval-bugg**
+- båda talen låg i modellens kontext, precis som i N1 (Hexatronics
+rörelsemarginal 2023) där modellen FRAMGÅNGSRIKT räknade ut kvoten från två
+separata fakta-rader. Här vägrade den istället att räkna, och bytte i
+stället ut till ett helt annat nyckeltal (EBITA-marginal) som den hittade
+färdigredovisat i löptext.
+
+Detta pekar mot samma mönster som N5 fast i genereringssteget snarare än
+retrieval: modellen är **inkonsekvent** i om den är villig att beräkna ett
+nyckeltal från två råa rader eller kräver en färdig siffra. N1 lyckades,
+N4 och N5 (delvis) misslyckades med i grunden samma uppgift. Detta är
+värt en egen utredning - trolig kandidat är prompten/systeminstruktionen
+för svarsgenerering (`src/answer.py` eller `src/llm.py`), inte
+retrieval-lagret som de föreslagna åtgärderna i baseline riktade in sig på.
+
+## Sammanfattande bedömning
+
+Åtgärd #1 från baseline (bolagsmedveten terminologi) är genomförd och
+**löser sitt avsedda problem** (N5:s ursprungliga fel-metod är borta, Y3 är
+fixad). Men totalsiffran 15/18 (83 %) mot 14/18 (78 %) döljer att
+förbättringen inte är entydig:
+
+1. **Två äkta förbättringar**, verifierade mot källdata: Y3 (rätt post,
+   rätt sida) och N3 (bekräftat att s. 144 är en legitim, till och med
+   bättre, källa än facits egen).
+2. **En kvarstående brist med ny grundorsak**: N5 är inte längre en
+   "fel metod"-bugg utan en "flera dubbletter av samma rad tränger ut den
+   andra raden"-bugg i retrieval-rankningen.
+3. **En ny regression**: N4, som var RÄTT i baseline, är nu FEL - inte på
+   grund av retrieval (data fanns i kontext) utan för att modellen vägrade
+   beräkna en kvot den tidigare (N1) visat sig kunna beräkna.
+4. **En kvalitetsbrist utan sifferfel**: Y2 har nu rätt tal och rätt
+   attribution, men häver sin egen korrekta slutsats med en onödig
+   "vilket mått avses"-brasklapp.
+
+**Förslag på åtgärder** (inte genomförda i denna omgång - flaggas för
+nästa steg, i linje med projektets princip att stanna vid osäkerhet snarare
+än att gissa vidare):
+1. Undersök varför modellen (N4, N5) ibland vägrar beräkna ett nyckeltal
+   från två närvarande råa poster trots att den bevisligen kan (N1) - detta
+   är sannolikt en prompt-/instruktionsfråga i svarsgenereringen, inte
+   retrieval.
+2. Inför en avdubblingsregel i retrieval som slår samman/väljer EN
+   representant när flera hämtade chunkar uppenbart beskriver samma
+   post-och-år (N5:s tre "Periodens resultat"-rader), så att kandidatdjupet
+   inte slösas på dubbletter av samma fakta på bekostnad av en annan
+   efterfrågad post.
+3. En regel som dämpar överflödig hedging när modellen redan gett ett
+   entydigt, korrekt attribuerat svar (Y2) - onödig osäkerhet om en redan
+   besvarad fråga är i sig en kvalitetsbrist, även när ingen siffra är fel.
