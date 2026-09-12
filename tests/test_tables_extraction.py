@@ -2,9 +2,10 @@
 dokument i data/raw, inte bara det första vi testade på (Fas 1, steg 4).
 
 Körs mot varje dokuments faktiska huvudräkningssidor, lokaliserade med
-`locate_statement_pages` på rätt nivå per bolag (se docs/DECISIONS.md för
-varför SkiStar körs med "moderbolag" medan Volvo/Hexatronic använder
-standardvärdet "koncern").
+`locate_statement_pages` på rätt nivå per bolag - `_level_for()` i
+src/pipeline.py avgör nivån, och samtliga tre bolag kör idag "koncern"
+(se src/locate_statements.py för historiken om varför SkiStar tidigare
+körde på "moderbolag" och varför det inte längre gäller).
 """
 
 import re

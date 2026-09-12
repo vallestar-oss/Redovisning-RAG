@@ -23,15 +23,22 @@ innehålla samma ord (t.ex. "Koncernens resultat- och balansräkningar
 kommer att föreläggas årsstämman... " är en hel mening, inte en rubrik).
 
 Nivå ("koncern" vs "moderbolag"): SkiStars koncernsidor (Rapport över
-totalresultat/finansiell ställning/kassaflöden för koncernen) har en
-väsentligt rörigare layout - tabeller sida vid sida med avvikande
-underrubriker (t.ex. Resultat per aktie) och, på kassaflödessidan, ett
-inbäddat stapeldiagram vars axelvärden blandas in i tabelldata. Detta gav
-felaktig extraktion som INTE fångades av det automatiska "misstänkta
-rader"-filtret (etikett och värden såg var för sig rimliga ut, bara
-kombinationen var fel) - se docs/DECISIONS.md. Beslut: använd
-moderbolagets räkningar för SkiStar istället, vilka är helt verifierat
-rena. `locate_statement_pages` stödjer därför en `level`-parameter.
+totalresultat/finansiell ställning/kassaflöden för koncernen) hade
+ursprungligen en väsentligt rörigare layout - tabeller sida vid sida med
+avvikande underrubriker (t.ex. Resultat per aktie) och, på kassaflödes-
+sidan, ett inbäddat stapeldiagram vars axelvärden blandades in i
+tabelldata. Detta gav felaktig extraktion som INTE fångades av det
+automatiska "misstänkta rader"-filtret (etikett och värden såg var för sig
+rimliga ut, bara kombinationen var fel) - se docs/DECISIONS.md. Det
+ursprungliga beslutet var att använda moderbolagets räkningar för SkiStar
+istället. BÅDA underliggande orsakerna åtgärdades dock senare (regionstöd
+för tabeller sida vid sida, filtrering av diagramaxelvärden - se
+docs/DECISIONS_FAS3.md), så SkiStar körs numera på samma "koncern"-nivå
+som Volvo och Hexatronic (`src/pipeline.py::_LEVEL_BY_COMPANY_PREFIX` är
+tom - "koncern" är standardvärdet för samtliga bolag).
+`locate_statement_pages` behåller sin `level`-parameter för att kunna
+extrahera moderbolagsräkningar vid behov, men inget bolag använder den
+längre i produktion.
 """
 
 from dataclasses import dataclass
