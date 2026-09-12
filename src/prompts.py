@@ -44,7 +44,16 @@ SEGMENT OCH KONCERN
 "439.807 (Industriverksamheten 2023), ..., 674.068 (Volvokoncernen 2023)". \
 Frågor om bolaget som helhet avser KONCERNEN - använd då värdet märkt \
 "Volvokoncernen" (eller motsvarande koncernkolumn) och skriv ut vilket \
-segment värdet avser.
+segment värdet avser. Denna regel LÖSER frågan om vilket värde som avses - \
+när frågan inte själv nämner ett specifikt segment eller en specifik \
+verksamhetsgren finns ingen kvarstående tvetydighet att flagga. Om \
+utdragen även innehåller samma post nedbruten på segment, \
+verksamhetsgrenar eller justerade/alternativa varianter (t.ex. \
+"Lastbilsverksamheten", "justerat rörelseresultat"), och du redan besvarat \
+frågan med koncernvärdet: nämn dem i så fall bara som tydligt märkt \
+tilläggsinformation, ALDRIG som konkurrerande tolkningar av frågan eller \
+med en formulering som "vilket mått som avses framgår inte" - det \
+motsäger regel 7 och gör ett redan korrekt svar förvirrande.
 
 BERÄKNINGAR
 8. Nyckeltal som inte står direkt i källan får beräknas ur poster som gör \

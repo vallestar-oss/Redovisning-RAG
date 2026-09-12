@@ -554,3 +554,43 @@ kräva minst en kandidat av samma SEKTION/rad-typ som redan finns i topp-k,
 inte bara samma år, eller acceptera testets nuvarande begränsning och
 skriva om det för att spegla att en enda välvald sammandragsrad kan vara
 en giltig, fullständig källa för en flerårsfråga).
+
+## Åtgärdat — 2026-09-12: Y2:s självunderminerande hedge (åtgärdsförslag #3)
+
+**Rotorsak:** regel 7 (SEGMENT OCH KONCERN) i `src/prompts.py` löser redan
+VILKET värde som ska användas (Volvokoncernen), men sa inget om hur
+modellen skulle hantera att källorna ofta även innehåller samma post
+nedbruten på segment/verksamhetsgrenar. I ~hälften av körningarna (se
+stabilitetstabellen ovan) tolkade modellen dessa extra siffror som
+olösta, konkurrerande alternativ och avslutade med "Vilket mått som avses
+framgår inte av frågan" - trots att den redan korrekt besvarat frågan med
+koncernvärdet i första meningen.
+
+**Fix:** utökade regel 7 med en explicit mening: regeln LÖSER frågan om
+vilket värde som avses när frågan inte själv nämner ett segment, så
+segment-/verksamhetsgrensnedbrytningar i källorna får bara presenteras
+som tydligt märkt tilläggsinformation - aldrig som konkurrerande
+tolkningar eller med formuleringar som antyder kvarstående tvetydighet.
+
+**Verifiering:**
+1. Körde Y2-frågan direkt (utan hela facit-svepet, billigare) 4 gånger i
+   följd: samtliga 4 gav nu koncernvärdet först (66,6/66,8, matchar
+   facit) och märkte lastbilsverksamhetens/Industriverksamhetens siffror
+   explicit som "tilläggsinformation" - ingen hedge i någon av de 4
+   körningarna, mot ~50 % hedge-frekvens innan fixen.
+2. `pytest tests/` - 155/156 grönt (samma kända, medvetet röda
+   `test_multi_year_query_covers_all_mentioned_years`, opåverkad).
+3. `python -m src.evaluation` kördes om i sin helhet: **18 av 18 rätt.**
+   Y2 gav ett rent, korrekt svar. Som bonuseffekt blev även N1, N2, N4 och
+   N5:s tilläggsinformation (EBITA-marginal, bruttomarginal m.fl.)
+   konsekvent tydligt märkt som jämförelse/tillägg istället för att
+   riskera att framstå som förvirrande alternativ - samma
+   regelförtydligande generaliserade alltså bortom bara Volvo-segment.
+
+**Kvarstående öppna punkter (oförändrade):** retrieval-crowding-buggen
+(åtgärdsförslag #2, `test_multi_year_query_covers_all_mentioned_years`)
+är fortfarande medvetet olöst. Och precis som tidigare: en enda 18/18-
+körning är inte bevis på permanent stabilitet - DeepSeek är inte garanterat
+deterministiskt. README.md och docs/case-study.md:s siffror (78 %, 134
+tester) är fortsatt INTE uppdaterade i väntan på fler bekräftande
+körningar, enligt överenskommelse.
