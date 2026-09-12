@@ -407,3 +407,67 @@ nästa steg, i linje med projektets princip att stanna vid osäkerhet snarare
 3. En regel som dämpar överflödig hedging när modellen redan gett ett
    entydigt, korrekt attribuerat svar (Y2) - onödig osäkerhet om en redan
    besvarad fråga är i sig en kvalitetsbrist, även när ingen siffra är fel.
+
+---
+
+# Uppföljning — 2026-09-12: prompt-fix för åtgärd #1 (N4/N5-beräkningsvägran)
+
+**Ändring:** `src/prompts.py`, regel 8 och 9 (BERÄKNINGAR). Rotorsaken från
+föregående avsnitts åtgärdsförslag #1 var att modellen (N4, N5) ibland
+vägrade beräkna ett efterfrågat standardnyckeltal (t.ex. vinstmarginal) trots
+att båda ingående posterna fanns i kontexten, och i N4:s fall bytte ut det
+mot ett annat, färdigredovisat närliggande mått (EBITA-marginal) istället
+för att räkna. Hypotesen: regel 9 ("räkna aldrig om alternativa nyckeltal...
+återge bolagets egen siffra istället") övergeneraliserades av modellen till
+att gälla ALLA nyckeltal med en näraliggande publicerad siffra, inte bara
+de uttryckliga "alternativa" måtten (justerat EBITDA, organisk tillväxt)
+regeln avsåg.
+
+**Fix:** skärpte regel 8 med en explicit mening om att avsaknad av en
+FÄRDIG siffra inte är samma sak som att svaret saknas för standardnyckeltal,
+och skärpte regel 9 med ett uttryckligt förbud mot att byta ut det
+efterfrågade nyckeltalet mot ett annat närliggande mått bara för att det
+råkar finnas färdigredovisat.
+
+**Verifiering:**
+1. `pytest tests/` - 155/156 gröna. Den enda röda
+   (`test_hybrid_search.py::test_multi_year_query_covers_all_mentioned_years`)
+   är en retrieval-nivå-test, opåverkad av prompt-ändringen (rör exakt
+   åtgärdsförslag #2 ovan, inte #1) - fanns redan innan denna ändring.
+2. `python -m src.evaluation` kördes om i sin helhet. Resultat för de två
+   berörda frågorna:
+
+   - **N4** (Hexatronics vinstmarginal 2024): **FEL → RÄTT.** Modellen
+     räknar nu ut 344 / 7 581 = ca 4,5 % med formel och båda
+     källhänvisningarna utskrivna, exakt facit.
+   - **N5** (Volvos vinstmarginal 2023): **FEL → RÄTT.** Modellen räknar nu
+     ut 49.932 / 552.764 = ca 9,0 % (Volvokoncernen), med båda posterna
+     korrekt källhänvisade (s. 59 för Periodens resultat, s. 220 för
+     Nettoomsättning). Detta löste alltså även N5, trots att den tidigare
+     diagnosen (retrieval trängde ut Nettoomsättning-raden) inte är
+     patchad - i den här körningen fanns båda posterna i kontexten, och
+     med den skärpta regeln användes de.
+
+   Övriga 16 frågor kontrollerades om oförändrade: alla fortsatt RÄTT,
+   inklusive N1/N2/N3 (ingen regression). Y2:s tidigare hedging
+   ("vilket mått som avses framgår inte av frågan") var borta i den här
+   körningen också - svaret gav den korrekta Volvokoncernen-siffran direkt
+   och listade segmentsiffrorna som ren tilläggsinformation utan att så
+   tvivel om huvudsvaret. Detta ingick inte i den här ändringen och kan
+   vara körning-till-körning-variation snarare än en effekt av
+   prompt-fixen; bekräftas först vid en framtida omkörning.
+
+**Nytt resultat: 18 av 18 rätt (100 %)** i denna körning, upp från 15/18
+(83 %) i föregående avsnitt.
+
+**Kvarstående, inte åtgärdat i detta steg:**
+- Åtgärdsförslag #2 (avdubblingsregel i retrieval) är fortfarande relevant
+  - `test_multi_year_query_covers_all_mentioned_years` visar att samma
+  klass av crowding-problem som orsakade N5:s ursprungliga fel fortfarande
+  finns kvar i retrieval-lagret, det råkade bara inte slå igenom i den här
+  evaluerings-körningen. En enda lyckad körning är inte bevis på att buggen
+  är borta - bara att den inte alltid triggas.
+- 100 % på 18 frågor vid en enda körning (temperature=0, men LLM-API:er är
+  inte garanterat deterministiska) är inte samma sak som ett bevisat
+  stabilt system. Rekommenderar att detta facit körs om ytterligare någon
+  gång innan det räknas som en bekräftad baseline.
