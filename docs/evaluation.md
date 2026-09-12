@@ -471,3 +471,86 @@ råkar finnas färdigredovisat.
   inte garanterat deterministiska) är inte samma sak som ett bevisat
   stabilt system. Rekommenderar att detta facit körs om ytterligare någon
   gång innan det räknas som en bekräftad baseline.
+
+## Stabilitetskontroll — andra omkörningen, 2026-09-12
+
+Körde `python -m src.evaluation` en tredje gång totalt (andra gången efter
+prompt-fixen), utan någon kodändring emellan, för att skilja en riktig fix
+från en enstaka tur.
+
+**N4 och N5 höll: RÄTT igen, båda gångerna.** Samma formel, samma
+källhänvisningar, samma resultat (344/7 581 → 4,5 %; 49.932/552.764 →
+9,0 %). Två av två gånger efter fixen räknar modellen nu ut nyckeltalet
+istället för att neka eller byta ut det - ett rimligt stöd för att
+prompt-fixen faktiskt sitter, inte bara råkade träffa rätt en gång.
+
+**Y2 var INTE stabil.** Kärnsvaret var återigen korrekt (66,6 vs 66,8,
+minskning med 0,2), men den självunderminerande hedgen var tillbaka:
+"Vilken siffra som avses beror på vilken del av verksamheten frågan
+gäller." - trots att frågan otvetydigt gäller Volvokoncernen som helhet
+och modellen redan givit rätt svar i första meningen. Föregående körning
+(samma prompt, samma kod) saknade den hedgen helt. Detta är alltså
+**genuin körning-till-körning-variation** i modellen, inte något min
+ändring av regel 8/9 påverkade (Y2 rör inte beräkningsreglerna) - och
+bekräftar att åtgärdsförslag #3 (dämpa överflödig hedging) fortfarande är
+obehandlat och kvarstår som öppen brist, oavsett vilken körning man råkar
+titta på.
+
+**Sammanfattning av de tre körningarna för de fyra ursprungligt avvikande
+frågorna:**
+
+| Fråga | Körning 1 (baseline) | Körning 2 (efter retrieval-fixar) | Körning 3 (efter prompt-fix) | Körning 4 (stabilitetskontroll) |
+|---|---|---|---|---|
+| Y2 | FEL | DELVIS (hedge) | RÄTT (ingen hedge) | DELVIS (hedge tillbaka) |
+| Y3 | DELVIS | RÄTT | RÄTT | RÄTT |
+| N3 | DELVIS | RÄTT | RÄTT | RÄTT |
+| N4 | RÄTT | FEL (regression) | RÄTT | RÄTT |
+| N5 | FEL | FEL (annan orsak) | RÄTT | RÄTT |
+
+Y3 och N3 är stabilt fixade (retrieval-lagret). N4 och N5 är nu stabilt
+fixade över två körningar (prompt-lagret). Y2 är den enda kvarstående
+instabila punkten - rätt tal varje gång, men presentationen växlar mellan
+en ren och en självunderminerande version beroende på körning.
+
+## Försökt och backad åtgärd — 2026-09-12: avdubblingsregel i retrieval (åtgärdsförslag #2)
+
+**Försök:** `_diversify_by_fiscal_year()` i `src/hybrid_search.py` - vid en
+flerårsfråga (t.ex. "...från 2023 till 2024?") varvades den fuserade
+kandidatlistan strikt per räkenskapsår innan topp-k valdes ut, så att inte
+ett enda dokument kunde ta alla platserna. Detta fick den sedan tidigare
+röda `test_multi_year_query_covers_all_mentioned_years`
+(`tests/test_hybrid_search.py`) att bli grön, och alla 156 tester passerade.
+
+**Varför den backades:** verifiering mot den faktiska produktionsinställningen
+(`answer_question()` använder `top_k=8`, inte testets `top_k=10`) visade att
+fixen gjorde Y2 SÄMRE, inte bättre - `python -m src.evaluation` gav Y2 som
+rent FEL (bara Lastbilsverksamhetens segmentsiffror, inget
+Volvokoncernen-tal alls), en regression jämfört med de två föregående
+körningarna.
+
+**Grundorsak till varför fixen slog fel:** kollade var
+`volvo_2023.pdf::resultaträkning::rad9` (den "saknade" 2023-raden testet
+efterlyste) faktiskt rankas i den ofiltrerade fusionslistan: **plats 103 av
+185** kandidater. Den är alltså inte en korrekt rad som trängs undan av
+dubbletter - den är genuint lexikalt olik frågan, eftersom volvo_2023.pdf:s
+rad bara nämner "2023"/"2022" medan frågan nämner "2023"+"2024" (volvo_2024.pdf:s
+rader vinner ärligt genom att nämna BÅDA årtalen). Att tvinga in en
+2023-kandidat i topp-k innebär därför att tvinga in en irrelevant rad -
+inte att avslöja en dold korrekt rad - på bekostnad av
+`volvo_2024.pdf::kassaflödesanalys::rad38` (den tioåriga sammandragsraden
+som redan innehåller korrekta 2023/2024-siffror och som gav Y2 rätt svar i
+de två föregående körningarna).
+
+**Slutsats:** testets underliggande oro är fortfarande legitim (skydda mot
+omräknade jämförelsetal mellan årsrapporter, exakt det Y2-analysen ovan
+identifierade som en risk), men en generell "tvinga fram dokumentspridning"-
+lösning är fel verktyg här - det botar symptomet (testets mätvärde) på
+bekostnad av den faktiska svarskvaliteten. Koden i `src/hybrid_search.py` är
+återställd till sitt tidigare, verifierade läge (18/18 i föregående
+avsnitt). `test_multi_year_query_covers_all_mentioned_years` är alltså
+KVAR röd - ett medvetet, dokumenterat beslut, inte en förbisedd
+regression. En framtida lösning behöver sannolikt vara mer riktad (t.ex.
+kräva minst en kandidat av samma SEKTION/rad-typ som redan finns i topp-k,
+inte bara samma år, eller acceptera testets nuvarande begränsning och
+skriva om det för att spegla att en enda välvald sammandragsrad kan vara
+en giltig, fullständig källa för en flerårsfråga).
