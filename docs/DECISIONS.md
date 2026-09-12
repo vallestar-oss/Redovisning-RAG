@@ -101,16 +101,24 @@ kort etikett, saknade värden, eller en etikett som bara innehåller siffror.
    kluster-region (de definierar klustren) istället för att köra dem
    genom ankarregeln avsedd för övriga ord (titlar, "Not", valutaenhet).
 
-**Kvarstående, medvetet ej löst:** SkiStars KONCERN-sidor (motsvarande
-Volvo/Hexatronics primära räkningar) har utöver sida-vid-sida-tabeller även
-underrubriker med avvikande kolumnpositioner (t.ex. "Resultat per aktie")
-och, på kassaflödessidan, ett inbäddat stapeldiagram vars axelvärden
-blandas in i tabelldata. Detta gav fortsatt fel extraktion även efter
-region-stödet, och användaren beslutade (2026-08-06) att använda SkiStars
-MODERBOLAG-räkningar istället, vilka är helt verifierat rena.
-`locate_statement_pages(pdf_path, level=...)` stödjer båda nivåerna;
-SkiStar körs med `level="moderbolag"`, övriga bolag med `level="koncern"`
-(standard).
+**Kvarstående, medvetet ej löst (se uppdatering nedan):** SkiStars
+KONCERN-sidor (motsvarande Volvo/Hexatronics primära räkningar) har utöver
+sida-vid-sida-tabeller även underrubriker med avvikande kolumnpositioner
+(t.ex. "Resultat per aktie") och, på kassaflödessidan, ett inbäddat
+stapeldiagram vars axelvärden blandas in i tabelldata. Detta gav fortsatt
+fel extraktion även efter region-stödet, och användaren beslutade
+(2026-08-06) att använda SkiStars MODERBOLAG-räkningar istället, vilka är
+helt verifierat rena. `locate_statement_pages(pdf_path, level=...)`
+stödjer båda nivåerna; SkiStar körs med `level="moderbolag"`, övriga bolag
+med `level="koncern"` (standard).
+
+**Uppdatering (Fas 3, se docs/DECISIONS_FAS3.md):** båda underliggande
+orsakerna åtgärdades senare (regionstöd för tabeller sida vid sida,
+filtrering av diagramaxelvärden). SkiStar körs sedan dess på "koncern"-
+nivå precis som övriga bolag - `level="moderbolag"` används inte längre i
+produktion, se `src/pipeline.py::_LEVEL_BY_COMPANY_PREFIX`. Beslutet ovan
+var alltså inte slutgiltigt trots formuleringen "kvarstående, medvetet ej
+löst" - lämnat orört här som historik, inte som aktuell status.
 
 **Slutgiltig verifiering (2026-08-06):** automatisk sweep över samtliga
 34 lokaliserade sidor i alla 9 dokument gav noll flaggade rader. Manuell

@@ -94,17 +94,60 @@ _TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 # Fixen är att EXPANDERA frågan med posternas egna namn innan sökningen körs,
 # så att båda termerna får en chans att matcha lexikalt (BM25) och
 # semantiskt (embedding). Formlerna är hämtade direkt ur docs/SCOPE.md.
+#
+# Bolagsspecifik terminologi (fixar N5, docs/evaluation.md): nettoresultat-
+# raden heter OLIKA saker hos olika bolag - bekräftat mot samtliga tre
+# bolags faktiska fakta-chunkar i data/chunks/:
+#   - Hexatronic: "Årets resultat"
+#   - SkiStar:    "Årets resultat" (även "Årets totalresultat" finns, men
+#                 det är en annan post, se separat åtgärd för Y3)
+#   - Volvo:      "Periodens resultat" (ALDRIG "Årets resultat")
+# En enda generisk term per nyckeltal missade därför alltid Volvos rad.
+#
+# Två lösningar övervägdes. Första försöket var en gemensam synonymlista med
+# ALLA kända varianter oavsett bolag ("årets resultat" + "periodens
+# resultat" för alla). Uppmätt med en fristående BM25-körning direkt mot
+# data/chunks/ (rank_bm25, utan HybridSearcher/embeddingmodellen) visade det
+# sig FÖRSÄMRA ett redan fungerande fall (N4, Hexatronics vinstmarginal
+# 2024): "resultat" är ett extremt vanligt ord i nästan varje
+# resultaträkningsrad ("Rörelseresultat", "Resultat före skatt", "Resultat
+# per aktie", ...), så att lägga till "periodens resultat" för ALLA bolag
+# höjde BM25-poängen brett över tusentals orelaterade chunkar och knuffade
+# ut Hexatronics Nettoomsättning-rad ur kandidatdjupet:
+#
+#   Fråga: "Vad var Hexatronics vinstmarginal 2024?" (BM25 fullrank)
+#                                Nettoomsättning   Årets resultat
+#   (a) Gemensam synonymlista    rank 282          rank 23-24
+#   (b) Bolagsmedveten (vald)    rank 93           rank 10-11 (= baseline)
+#
+# _CANDIDATE_DEPTH är 100 - (a) knuffar alltså Nettoomsättning från precis
+# INNANFÖR kandidatdjupet till klart UTANFÖR, vilket hade riskerat att göra
+# N4 till en regression för att fixa N5. Rätt lösning är därför en
+# BOLAGSMEDVETEN expansion: lägg bara till det bolagets EGEN term, inte alla
+# kända varianter för alla bolag. expand_query() tar därför emot bolaget
+# (identifierat av parse_query_filters() i search(), se nedan) och använder
+# en platshållare i _RATIO_TERM_EXPANSIONS som löses upp mot rätt term per
+# bolag. Ett oidentifierat bolag (queryn nämner inget bolagsnamn, eller
+# parse_query_filters gav ingen träff) faller tillbaka på båda kända
+# varianter - hellre en bred gissning än ingen alls.
+_NET_RESULT_PLACEHOLDER = "{nettoresultat}"
+_COMPANY_NET_RESULT_TERMS: dict[str, list[str]] = {
+    "volvo": ["periodens resultat"],
+    "hexatronic": ["årets resultat"],
+    "skistar": ["årets resultat"],
+}
+_DEFAULT_NET_RESULT_TERMS = ["årets resultat", "periodens resultat"]
 _RATIO_TERM_EXPANSIONS: dict[str, list[str]] = {
     "bruttomarginal": ["bruttovinst", "nettoomsättning", "omsättning"],
     "rörelsemarginal": ["rörelseresultat", "nettoomsättning", "omsättning"],
-    "vinstmarginal": ["nettoresultat", "årets resultat", "nettoomsättning", "omsättning"],
+    "vinstmarginal": [_NET_RESULT_PLACEHOLDER, "nettoresultat", "nettoomsättning", "omsättning"],
     "soliditet": ["eget kapital", "summa tillgångar"],
     "skuldsättningsgrad": ["summa skulder", "eget kapital"],
     "kassalikviditet": ["omsättningstillgångar", "varulager", "kortfristiga skulder"],
-    "roe": ["nettoresultat", "eget kapital"],
-    "avkastning på eget kapital": ["nettoresultat", "eget kapital"],
-    "roa": ["nettoresultat", "summa tillgångar"],
-    "avkastning på totalt kapital": ["nettoresultat", "summa tillgångar"],
+    "roe": [_NET_RESULT_PLACEHOLDER, "nettoresultat", "eget kapital"],
+    "avkastning på eget kapital": [_NET_RESULT_PLACEHOLDER, "nettoresultat", "eget kapital"],
+    "roa": [_NET_RESULT_PLACEHOLDER, "nettoresultat", "summa tillgångar"],
+    "avkastning på totalt kapital": [_NET_RESULT_PLACEHOLDER, "nettoresultat", "summa tillgångar"],
     "fritt kassaflöde": ["kassaflöde från den löpande verksamheten", "investeringar"],
     "ebitda": ["rörelseresultat", "avskrivningar"],
 }
@@ -114,14 +157,25 @@ def _tokenize(text: str) -> list[str]:
     return _TOKEN_RE.findall(text.lower())
 
 
-def expand_query(query: str) -> str:
+def expand_query(query: str, company: str | None = None) -> str:
     """Lägger till underliggande postnamn när frågan nämner ett beräknat
-    nyckeltal. Returnerar frågan oförändrad annars."""
+    nyckeltal. Returnerar frågan oförändrad annars.
+
+    `company` (bolaget som `parse_query_filters` identifierade i frågan, om
+    något) styr vilken bolagsspecifik term _NET_RESULT_PLACEHOLDER löses upp
+    till - se _COMPANY_NET_RESULT_TERMS ovan för varför det måste vara
+    bolagsmedvetet och inte en gemensam lista."""
     lowered = query.lower()
     extra_terms: list[str] = []
     for ratio, terms in _RATIO_TERM_EXPANSIONS.items():
         if ratio in lowered:
-            extra_terms.extend(terms)
+            for term in terms:
+                if term == _NET_RESULT_PLACEHOLDER:
+                    extra_terms.extend(
+                        _COMPANY_NET_RESULT_TERMS.get(company, _DEFAULT_NET_RESULT_TERMS)
+                    )
+                else:
+                    extra_terms.append(term)
     if not extra_terms:
         return query
     return f"{query} " + " ".join(dict.fromkeys(extra_terms))
@@ -402,7 +456,10 @@ class HybridSearcher:
         # Expansionen görs EFTER filtertolkningen (som ska läsa frågan
         # skriven av användaren, inte de tillagda posttermerna) men
         # FÖRE själva sökningen, så både BM25 och embeddingen ser termerna.
-        search_query = expand_query(query)
+        # filters.company (redan identifierat ovan) styr vilken
+        # bolagsspecifik nettoresultat-term expand_query() väljer - se
+        # _COMPANY_NET_RESULT_TERMS.
+        search_query = expand_query(query, filters.company)
         if search_query != query:
             emit(
                 on_progress,

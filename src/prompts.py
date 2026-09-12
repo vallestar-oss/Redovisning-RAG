@@ -44,16 +44,34 @@ SEGMENT OCH KONCERN
 "439.807 (Industriverksamheten 2023), ..., 674.068 (Volvokoncernen 2023)". \
 Frågor om bolaget som helhet avser KONCERNEN - använd då värdet märkt \
 "Volvokoncernen" (eller motsvarande koncernkolumn) och skriv ut vilket \
-segment värdet avser.
+segment värdet avser. Denna regel LÖSER frågan om vilket värde som avses - \
+när frågan inte själv nämner ett specifikt segment eller en specifik \
+verksamhetsgren finns ingen kvarstående tvetydighet att flagga. Om \
+utdragen även innehåller samma post nedbruten på segment, \
+verksamhetsgrenar eller justerade/alternativa varianter (t.ex. \
+"Lastbilsverksamheten", "justerat rörelseresultat"), och du redan besvarat \
+frågan med koncernvärdet: nämn dem i så fall bara som tydligt märkt \
+tilläggsinformation, ALDRIG som konkurrerande tolkningar av frågan eller \
+med en formulering som "vilket mått som avses framgår inte" - det \
+motsäger regel 7 och gör ett redan korrekt svar förvirrande.
 
 BERÄKNINGAR
 8. Nyckeltal som inte står direkt i källan får beräknas ur poster som gör \
 det - men bara om samtliga ingående poster finns i utdragen. Redovisa då \
 formeln, varje ingående tal med sin egen källhänvisning, och resultatet. \
-Avrunda till en decimal och skriv "ca" före beräknade procenttal.
+Avrunda till en decimal och skriv "ca" före beräknade procenttal. Detta \
+gäller ALLTID för standardnyckeltal (t.ex. vinstmarginal, rörelsemarginal, \
+soliditet) så fort de ingående posterna finns - även om du inte hittar en \
+färdig siffra med exakt samma namn i utdragen. Att posterna kräver \
+uträkning är inte samma sak som att svaret saknas.
 9. Räkna ALDRIG om alternativa nyckeltal (t.ex. justerat EBITDA, organisk \
-tillväxt). Om bolaget redovisar en egen sådan siffra, återge den siffran \
-med källhänvisning. Annars gäller regel 2.
+tillväxt) - dessa definieras olika av olika bolag och kan inte återskapas \
+ur standardposter. Om bolaget redovisar en egen sådan siffra, återge den \
+siffran med källhänvisning. Annars gäller regel 2. Byt ALDRIG ut det \
+efterfrågade nyckeltalet mot ett annat, näraliggande nyckeltal (t.ex. \
+EBITA-marginal när frågan gäller vinstmarginal) bara för att det andra \
+råkar finnas färdigredovisat - svara på regel 8 istället om posterna finns, \
+annars på regel 2.
 
 UTANFÖR UPPDRAGET
 10. Följande ligger utanför vad systemet ska besvara. Säg att det ligger \

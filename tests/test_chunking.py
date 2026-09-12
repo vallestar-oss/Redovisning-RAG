@@ -118,6 +118,36 @@ def test_fact_chunk_pages_exist_in_source_document(document_chunks):
         )
 
 
+def test_fact_chunk_text_leads_with_verbatim_row_label(document_chunks):
+    """Fixar Y3 (docs/evaluation.md): en fakta-chunks text ska inledas med
+    radens EXAKTA etikett (t.ex. "Årets resultat." eller "Årets
+    totalresultat.") som en egen fras, före den naturligt formulerade
+    meningen. Se _fact_chunk_text i src/chunking.py för den fullständiga
+    motiveringen - uppmätt effekt på BM25-rangordningen för det lexikalt
+    snarlika radparet "Årets resultat"/"Årets totalresultat"."""
+    path, chunks = document_chunks
+    doc = json.loads((path.parent.parent / "processed" / path.name).read_text(encoding="utf-8"))
+    labels_by_section: dict[str, set[str]] = {}
+    for page in doc["pages"]:
+        for row in page.get("table_rows", []):
+            labels_by_section.setdefault(page.get("statement_type", ""), set()).add(row["label"])
+
+    for c in chunks:
+        if c["chunk_type"] != "fact":
+            continue
+        # Etiketten ska stå ORDAGRANT som chunkens allra första fras, följd
+        # av ". " innan resten av meningen. OBS: kan INTE hittas genom att
+        # partitionera på första ". " - vissa etiketter innehåller själva
+        # en punkt (t.ex. "Räntebärande fordringar inkl. kortfristiga
+        # placeringar, netto") - så varje kandidatetikett provas istället
+        # med startswith.
+        candidates = labels_by_section.get(c["section"], set())
+        assert any(c["text"].startswith(f"{label}. ") for label in candidates), (
+            f"{path.name}: {c['chunk_id']} börjar inte med någon känd radetikett "
+            f"följd av '. ': {c['text']!r}"
+        )
+
+
 def test_text_chunks_within_size_bounds(document_chunks):
     """Textchunkar ska hålla sig inom den avsedda storleksramen - annars
     har mening-grupperingen i _chunk_text gått sönder."""

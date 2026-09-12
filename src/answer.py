@@ -10,6 +10,7 @@ from .llm import LLMProvider
 from .progress import ProgressCallback, emit
 from .prompts import NO_ANSWER_PHRASE, build_prompt
 from .search import SearchResult
+from .segment_check import check_segment_consistency
 
 
 @dataclass
@@ -57,9 +58,22 @@ def answer_question(
         f"{len(text)} tecken",
         {"elapsed_ms": llm_ms},
     )
+
+    is_no_answer = text.strip().startswith(NO_ANSWER_PHRASE)
+    # Efterhandskontroll segment vs. koncern (fixar Y2, docs/evaluation.md,
+    # se src/segment_check.py för fullständig motivering). Körs bara när
+    # modellen faktiskt gav ett svar - "Jag hittar inte svaret" har inget
+    # att flagga. Läser de FAKTISKA källorna, inte prompten, så kontrollen
+    # fångar retrieval-fel som en promptregel inte kan skydda mot.
+    if not is_no_answer:
+        warning = check_segment_consistency(question, text, results)
+        if warning:
+            emit(on_progress, "segment_check", "Flaggade segment/koncern-osäkerhet", warning)
+            text = f"{text}\n\n{warning}"
+
     return Answer(
         question=question,
         text=text,
         sources=prompt.sources,
-        is_no_answer=text.strip().startswith(NO_ANSWER_PHRASE),
+        is_no_answer=is_no_answer,
     )
