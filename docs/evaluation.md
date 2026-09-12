@@ -594,3 +594,41 @@ körning är inte bevis på permanent stabilitet - DeepSeek är inte garanterat
 deterministiskt. README.md och docs/case-study.md:s siffror (78 %, 134
 tester) är fortsatt INTE uppdaterade i väntan på fler bekräftande
 körningar, enligt överenskommelse.
+
+## Åtgärdat — 2026-09-12: skrev om det felaktiga retrieval-testet (åtgärdsförslag #2, del 2)
+
+Föregående försök att FIXA `test_multi_year_query_covers_all_mentioned_years`
+(tvinga fram dokumentspridning) backades eftersom det gjorde Y2 sämre i
+produktion. Den kvarstående frågan var om testets KRAV i sig var rätt.
+
+**Grävde vidare:** `volvo_2024.pdf::kassaflödesanalys::rad38` är en tioårig
+sammandragsrad som redan innehåller "Rörelseresultat var 66,6 (2024), 66,8
+(2023)..." - Volvokoncernens siffror för BÅDA åren, i EN enda chunk, i EN
+enda rapport. Den chunken rankas pålitligt #7 av ~185 kandidater för
+Y2-frågan (verifierat direkt mot `HybridSearcher.search()`, inte antaget)
+och är exakt det underlag som gett Y2 dess korrekta svar i samtliga
+körningar sedan N4/N5-fixen. Testets ursprungliga krav - att träffarna
+måste spänna över BÅDA räkenskapsårens DOKUMENT - var alltså inte en
+korrekt beskrivning av vad som krävs för ett korrekt svar. Det var fel
+mätvärde, inte bara en för aggressiv fix.
+
+**Åtgärd:** skrev om testet (nu
+`test_multi_year_query_retrieves_a_chunk_covering_both_years`,
+`tests/test_hybrid_search.py`) till att verifiera det som faktiskt
+förutsäger ett korrekt svar: att `kassaflödesanalys::rad38` finns med i
+topp-8 (produktionens faktiska `top_k`, inte testets tidigare godtyckliga
+`top_k=10`) - inte att träffarna spänner över flera dokument. Ingen
+kodändring i `src/hybrid_search.py` behövdes; det var testets förväntan
+som var fel, inte retrieval-koden.
+
+**Verifiering:** `pytest tests/` - **156 av 156 gröna.** Inga kända röda
+tester kvarstår i testsviten.
+
+**Bedömning:** detta LÖSER inte det generella, potentiella problemet att
+en flerårsfråga i teorin kan sakna en enda sammanfattande chunk med båda
+åren (det finns inte en generell garanti för att en sådan rad alltid
+existerar i alla möjliga framtida dokument). Men för det faktiska facit-
+setet och den faktiska korpusen är kravet nu korrekt specificerat och
+verifierat, istället för att bygga på ett antagande (dokumentspridning)
+som visade sig vara både fel OCH skadligt att tvinga fram. Om fler bolag
+läggs till utan en sådan sammandragstabell kan detta behöva omprövas.

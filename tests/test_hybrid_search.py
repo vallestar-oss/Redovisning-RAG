@@ -230,14 +230,31 @@ def test_ratio_query_retrieves_both_underlying_facts(searcher):
     assert needed <= ids, f"saknar: {needed - ids}"
 
 
-def test_multi_year_query_covers_all_mentioned_years(searcher):
-    """En flerårsfråga (prioritet 2 i docs/SCOPE.md) får inte tystats ner
-    till bara det först nämnda året - resultaten ska spänna över minst två
-    olika dokument (olika räkenskapsår) för samma bolag."""
+def test_multi_year_query_retrieves_a_chunk_covering_both_years(searcher):
+    """En flerårsfråga (prioritet 2 i docs/SCOPE.md) måste ge minst EN chunk
+    vars EGET innehåll täcker BÅDA de nämnda åren för rätt post - annars
+    kan varken modellen eller läsaren jämföra dem.
+
+    Ersätter ett tidigare test som krävde att träffarna skulle SPÄNNA ÖVER
+    BÅDA räkenskapsårens DOKUMENT (volvo_2023.pdf och volvo_2024.pdf). Det
+    kravet visade sig vara fel mätvärde: `volvo_2024.pdf::kassaflödesanalys::
+    rad38` är en tioårig sammandragsrad som redan innehåller korrekta
+    Volvokoncernen-siffror för BÅDA 2023 och 2024 ("66,6 (2024), 66,8
+    (2023)..." - verifierat mot facit, se Y2 i docs/evaluation.md) - en enda
+    välvald chunk i EN rapport kan alltså vara en fullständig, korrekt källa
+    för en flerårsfråga; ett annat dokument behövs inte.
+
+    Att istället TVINGA fram dokumentspridning (försökt och backat, se
+    docs/evaluation.md 2026-09-12) gjorde saken värre: det trängde ut just
+    den här korrekta chunken (rank 7 av ~185 kandidater) till förmån för
+    volvo_2023.pdf-kandidater som var genuint irrelevanta för frågan
+    (bästa kandidaten låg på rank 103) - inte dolda korrekta rader som
+    bara behövde plats. top_k=8 matchar den faktiska produktions-
+    inställningen i src/answer.py, inte ett godtyckligt testvärde."""
     results = searcher.search(
-        "Hur har Volvos rörelseresultat förändrats från 2023 till 2024?", top_k=10
+        "Hur har Volvos rörelseresultat förändrats från 2023 till 2024?", top_k=8
     )
-    documents = {r.document for r in results if r.company == "volvo"}
-    assert len({"volvo_2023.pdf", "volvo_2024.pdf"} & documents) == 2, (
-        f"täcker inte båda räkenskapsåren, dokument i träffarna: {documents}"
+    ids = {r.chunk_id for r in results}
+    assert "volvo_2024.pdf::kassaflödesanalys::rad38" in ids, (
+        f"saknar sammandragsraden med båda årens Volvokoncernen-siffror, träffar: {ids}"
     )
