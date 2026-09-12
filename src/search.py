@@ -1,8 +1,18 @@
-"""Enkel sökfunktion: text in, topp-k relevanta chunkar ut med källa synlig.
+"""Ren vektorsökning: text in, topp-k relevanta chunkar ut med källa synlig.
 
 Bygger på Chroma-indexet från `src/vectorstore.py`. Både modellvalet och
 frågeprefixet importeras därifrån - frågan måste embeddas med exakt samma
 modell och konvention som dokumenten, annars blir avstånden meningslösa.
+
+**Status:** detta var Fas 3:s första sökimplementation, INTE den vägen
+appen eller `src/answer.py` använder idag - se `src/hybrid_search.py` för
+den faktiska produktionssökningen (metadatafilter + vektor + BM25 + RRF).
+`Searcher` ersattes eftersom ren vektorsökning uppmätt missade träffar
+helt (en fråga hittade inte rätt chunk ens bland topp 100 av 5619, se
+docs/DECISIONS_FAS3.md) - klassen behålls ändå, oförändrad, som en körbar
+baseline för att visa den skillnaden (`python -m src.search "fråga"`),
+inte som en aktiv del av pipelinen. `SearchResult` nedan är dock delad
+infrastruktur och används av hela systemet, inklusive `HybridSearcher`.
 """
 
 from dataclasses import dataclass
@@ -28,7 +38,9 @@ class SearchResult:
 
 
 class Searcher:
-    """Laddar modellen och Chroma-collection en gång, återanvänds för flera sökningar."""
+    """Fas 3:s ursprungliga, rena vektorsökning - se modulens docstring
+    ovan för varför den inte är produktionsvägen längre. Laddar modellen
+    och Chroma-collection en gång, återanvänds för flera sökningar."""
 
     def __init__(
         self,
